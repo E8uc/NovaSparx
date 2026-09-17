@@ -2,7 +2,7 @@ name: NovaSparx checks
 
 on:
   push:
-    branches: [main, novasparx-web-final]
+    branches: [main]
   pull_request:
 
 permissions:
