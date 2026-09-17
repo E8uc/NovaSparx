@@ -12,6 +12,7 @@ public sealed class NovaRequestDispatcher
     private readonly AssetInspectorService _inspector;
     private readonly TextureService _textures;
     private readonly PreviewResolverService _previews;
+    private readonly ClientMeshPackageService _clientMeshes;
     private readonly ILogger<NovaRequestDispatcher> _log;
 
     private static readonly JsonSerializerOptions JsonOptions =
@@ -27,6 +28,7 @@ public sealed class NovaRequestDispatcher
         AssetInspectorService inspector,
         TextureService textures,
         PreviewResolverService previews,
+        ClientMeshPackageService clientMeshes,
         ILogger<NovaRequestDispatcher> log)
     {
         _provider = provider;
@@ -34,6 +36,7 @@ public sealed class NovaRequestDispatcher
         _inspector = inspector;
         _textures = textures;
         _previews = previews;
+        _clientMeshes = clientMeshes;
         _log = log;
     }
 
@@ -76,6 +79,11 @@ public sealed class NovaRequestDispatcher
 
                 ("GET", "/v1/preview") =>
                     await PreviewAsync(
+                        GetAssetPath(query),
+                        cancellationToken),
+
+                ("GET", "/v1/client-mesh") =>
+                    await ClientMeshAsync(
                         GetAssetPath(query),
                         cancellationToken),
 
@@ -174,6 +182,9 @@ public sealed class NovaRequestDispatcher
                 _textures.CacheEntries,
             universalMeshPreview = true,
             universalPreviewPlan = true,
+            clientRendered3d = true,
+            clientMeshBinary =
+                ClientMeshPackageService.Schema,
             staticMesh = true,
             skeletalMesh = true,
             inspector = "universal-uobject-metadata-v1"
@@ -247,6 +258,44 @@ public sealed class NovaRequestDispatcher
         return Json(
             200,
             resolved);
+    }
+
+    private async Task<DispatchResponse> ClientMeshAsync(
+        string rawPath,
+        CancellationToken cancellationToken)
+    {
+        using var timeout =
+            CreateTimeout(
+                cancellationToken,
+                TimeSpan.FromMinutes(2));
+
+        var package =
+            await _clientMeshes.BuildAsync(
+                rawPath,
+                timeout.Token);
+
+        if (package is null)
+        {
+            return Json(
+                404,
+                new
+                {
+                    state = "missing",
+                    error =
+                        "NovaSparx could not resolve this path as a browser-renderable StaticMesh or SkeletalMesh.",
+                    path =
+                        AssetPathResolver.Canonicalize(
+                            rawPath)
+                });
+        }
+
+        return new DispatchResponse(
+            Status:
+                200,
+            ContentType:
+                ClientMeshPackageService.ContentType,
+            Body:
+                package.Bytes);
     }
 
     private async Task<DispatchResponse> InspectAsync(
@@ -381,10 +430,8 @@ public sealed class NovaRequestDispatcher
         return new DispatchResponse(
             Status:
                 200,
-
             ContentType:
                 texture.ContentType,
-
             Body:
                 texture.Bytes);
     }
@@ -474,14 +521,11 @@ public sealed class NovaRequestDispatcher
         return new DispatchResponse(
             Status:
                 status,
-
             ContentType:
                 "application/json; charset=utf-8",
-
             Body:
                 JsonSerializer.SerializeToUtf8Bytes(
                     value,
                     JsonOptions));
     }
 }
-

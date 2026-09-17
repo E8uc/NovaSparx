@@ -48,6 +48,9 @@ builder.Services
     .AddSingleton<PreviewResolverService>();
 
 builder.Services
+    .AddSingleton<ClientMeshPackageService>();
+
+builder.Services
     .AddSingleton<NovaRequestDispatcher>();
 
 builder.Services
@@ -55,7 +58,6 @@ builder.Services
 
 builder.Services
     .AddHostedService<NovaLinkHostedService>();
-
 
 builder.WebHost
     .ConfigureKestrel(
@@ -80,9 +82,9 @@ var app =
 static bool Authorized(
     HttpRequest request)
 {
-    // NOVASPARX_SHARED_TOKEN is the canonical one-time secret for the edge,
-    // direct backend and AutoLink. The older route-specific names and explicit
-    // PREVIOUS values remain valid so a secret can be rotated without downtime.
+    // NOVASPARX_SHARED_TOKEN is the canonical secret for the edge,
+    // direct backend and AutoLink. Previous values remain valid during
+    // rotation so the edge and backend can be updated without downtime.
     var configured =
         new[]
         {
@@ -269,6 +271,9 @@ static async Task DispatchHttpAsync(
     }
     else
     {
+        // Mesh packages can be large and represent live Fortnite data. The
+        // Cloudflare edge may apply its own short cache, while the origin does
+        // not retain authenticated responses in intermediary caches.
         context.Response.Headers
             .CacheControl =
             "no-store";
@@ -308,6 +313,12 @@ app.MapGet(
                     true,
                 skeletalMeshPreview =
                     true,
+                clientRendered3d =
+                    true,
+                clientMeshBinary =
+                    ClientMeshPackageService.Schema,
+                serverSide3dRendering =
+                    false,
                 autoLinkConfigured =
                     !string.IsNullOrWhiteSpace(
                         linkUrl),
@@ -320,6 +331,7 @@ app.MapGet(
                         "/v1/refresh",
                         "/v1/resolve?path=...",
                         "/v1/preview?path=...",
+                        "/v1/client-mesh?path=...",
                         "/v1/inspect?path=...",
                         "/v1/references?path=...",
                         "/v1/texture?path=..."
@@ -406,6 +418,19 @@ app.MapGet(
             cancellationToken));
 
 app.MapGet(
+    "/v1/client-mesh",
+    (
+        HttpContext context,
+        NovaRequestDispatcher dispatcher,
+        CancellationToken cancellationToken) =>
+        DispatchHttpAsync(
+            context,
+            dispatcher,
+            "/v1/client-mesh",
+            requireAuth: true,
+            cancellationToken));
+
+app.MapGet(
     "/v1/inspect",
     (
         HttpContext context,
@@ -445,4 +470,3 @@ app.MapGet(
             cancellationToken));
 
 app.Run();
-
