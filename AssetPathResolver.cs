@@ -189,6 +189,34 @@ public static partial class AssetPathResolver
 
         // Most accurate information first.
         Add(raw);
+
+        // Preserve the full physical plugin hierarchy as well. Fortnite
+        // GameFeatures can contain nested plugin folders such as
+        // GameFeatures/Figment/Figment_S10/Content/... . The virtual mount
+        // (/Figment_S10/...) cannot reconstruct the parent "Figment" folder,
+        // so keep package/object forms derived from the exact raw path before
+        // trying normalized guesses.
+        var rawPhysical = (raw ?? string.Empty)
+            .Trim()
+            .Trim('\'', '"')
+            .Replace('\\', '/');
+
+        foreach (var extension in new[] { ".uasset", ".uexp", ".ubulk" })
+        {
+            if (rawPhysical.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+            {
+                rawPhysical = rawPhysical[..^extension.Length];
+                break;
+            }
+        }
+
+        if (
+            rawPhysical.StartsWith("FortniteGame/Plugins/", StringComparison.OrdinalIgnoreCase) ||
+            rawPhysical.StartsWith("Plugins/", StringComparison.OrdinalIgnoreCase))
+        {
+            AddPackageAndObject(rawPhysical);
+        }
+
         Add(canonical);
         Add(objectPath);
 
