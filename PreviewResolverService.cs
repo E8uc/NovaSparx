@@ -107,9 +107,26 @@ public sealed class PreviewResolverService
                     "The asset could not be loaded; only the normalized path is verified.");
         }
 
+        var sourceFamily =
+            AssetFamily(
+                inspection.AssetType,
+                canonical);
+
+        if (sourceFamily == "texture")
+        {
+            return MetadataPlan(
+                canonical,
+                inspection.AssetType,
+                inspection,
+                attempted: [],
+                evidence:
+                    "The requested asset is a texture. Cross-type mesh/Blueprint promotion is disabled.");
+        }
+
         var candidates =
             BuildCandidates(
-                inspection);
+                inspection,
+                sourceFamily);
 
         var queued =
             new HashSet<string>(
@@ -306,8 +323,13 @@ public sealed class PreviewResolverService
     }
 
     private static List<Candidate> BuildCandidates(
-        AssetInspection inspection)
+        AssetInspection inspection,
+        string? sourceFamily = null)
     {
+        sourceFamily ??=
+            AssetFamily(
+                inspection.AssetType,
+                inspection.Path);
         var output =
             new List<Candidate>();
 
@@ -321,6 +343,20 @@ public sealed class PreviewResolverService
             string? rawPath,
             int score)
         {
+            if (
+                sourceFamily == "texture" &&
+                mode != "texture")
+            {
+                return;
+            }
+
+            if (
+                sourceFamily == "material" &&
+                mode == "mesh")
+            {
+                return;
+            }
+
             var path =
                 AssetPathResolver.Canonicalize(
                     rawPath ?? string.Empty);
@@ -480,6 +516,60 @@ public sealed class PreviewResolverService
                     candidate.Path,
                 StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static string AssetFamily(
+        string? assetType,
+        string? path)
+    {
+        var type =
+            (assetType ?? string.Empty)
+                .ToLowerInvariant();
+
+        var leaf =
+            (path ?? string.Empty)
+                .Replace('\\', '/')
+                .Split('/')
+                .LastOrDefault()?
+                .Split('.')[0]
+                .ToLowerInvariant() ??
+            string.Empty;
+
+        if (
+            type.Contains("texture") ||
+            leaf.StartsWith("t_") ||
+            leaf.StartsWith("tex_"))
+        {
+            return "texture";
+        }
+
+        if (
+            type.Contains("blueprint") ||
+            type.Contains("generatedclass") ||
+            leaf.StartsWith("bp_") ||
+            leaf.StartsWith("bpc_"))
+        {
+            return "blueprint";
+        }
+
+        if (
+            type.Contains("staticmesh") ||
+            type.Contains("skeletalmesh") ||
+            leaf.StartsWith("sm_") ||
+            leaf.StartsWith("sk_"))
+        {
+            return "mesh";
+        }
+
+        if (
+            type.Contains("material") ||
+            leaf.StartsWith("mi_") ||
+            leaf.StartsWith("m_"))
+        {
+            return "material";
+        }
+
+        return "other";
     }
 
     private static string CandidateKey(
