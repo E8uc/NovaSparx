@@ -27,6 +27,9 @@ jobs:
       - name: Build
         run: dotnet build NovaSparx.Backend.csproj --configuration Release --no-restore
 
+      - name: Build reference-index tool
+        run: dotnet build tools/NovaSparx.ReferenceIndex/NovaSparx.ReferenceIndex.csproj --configuration Release --no-restore
+
       - name: Check browser modules
         run: |
           node --check web/novasparx-format.js
