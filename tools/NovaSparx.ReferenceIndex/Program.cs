@@ -1,0 +1,551 @@
+using System.IO.Compression;
+using System.Text;
+using System.Text.Json;
+using CUE4Parse.UE4.AssetRegistry;
+using CUE4Parse.UE4.AssetRegistry.Objects;
+using CUE4Parse.UE4.Readers;
+using CUE4Parse.UE4.Versions;
+using Microsoft.Extensions.Logging.Abstractions;
+using NovaSparx.Backend;
+
+const long MaxRegistryBytes = 768L * 1024L * 1024L;
+
+var outputDirectory =
+    args.Length > 0
+        ? Path.GetFullPath(args[0])
+        : Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "../../../../web/reference-index"));
+
+Directory.CreateDirectory(outputDirectory);
+
+Environment.SetEnvironmentVariable(
+    "NOVASPARX_CACHE_DIR",
+    Path.Combine(
+        Path.GetTempPath(),
+        "novasparx-reference-index"));
+
+using var http =
+    new HttpClient
+    {
+        Timeout =
+            TimeSpan.FromMinutes(15)
+    };
+
+var sources =
+    new PublicFortniteSources(
+        http,
+        NullLogger<PublicFortniteSources>.Instance);
+
+using var timeout =
+    new CancellationTokenSource(
+        TimeSpan.FromMinutes(25));
+
+Console.WriteLine(
+    "Downloading current Fortnite manifest metadata...");
+
+var (
+    manifest,
+    version) =
+    await sources.GetLiveManifestAsync(
+        timeout.Token);
+
+var registryFile =
+    manifest.Files
+        .Where(
+            file =>
+                file.FileName
+                    .Replace('\\', '/')
+                    .EndsWith(
+                        "AssetRegistry.bin",
+                        StringComparison.OrdinalIgnoreCase))
+        .OrderBy(
+            file =>
+                string.Equals(
+                    file.FileName
+                        .Replace('\\', '/'),
+                    "FortniteGame/AssetRegistry.bin",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? 0
+                    : 1)
+        .ThenBy(
+            file =>
+                file.FileName.Length)
+        .FirstOrDefault()
+    ?? throw new InvalidOperationException(
+        "Current Fortnite manifest does not expose AssetRegistry.bin.");
+
+Console.WriteLine(
+    $"Reading {registryFile.FileName} for {version}...");
+
+await using var registryStream =
+    registryFile.GetStream();
+
+using var memory =
+    new MemoryStream();
+
+var buffer =
+    new byte[
+        1024 * 1024];
+
+while (true)
+{
+    var read =
+        await registryStream.ReadAsync(
+            buffer,
+            timeout.Token);
+
+    if (read == 0)
+        break;
+
+    if (
+        memory.Length +
+        read >
+        MaxRegistryBytes)
+    {
+        throw new InvalidOperationException(
+            "AssetRegistry.bin exceeded the 768 MiB CI safety limit.");
+    }
+
+    await memory.WriteAsync(
+        buffer.AsMemory(
+            0,
+            read),
+        timeout.Token);
+}
+
+var registryBytes =
+    memory.ToArray();
+
+Console.WriteLine(
+    $"Parsing AssetRegistry.bin ({registryBytes.Length:N0} bytes)...");
+
+var versions =
+    new VersionContainer(
+        EGame.GAME_UE6_0);
+
+using var archive =
+    new FByteArchive(
+        registryFile.FileName,
+        registryBytes,
+        versions);
+
+var registry =
+    new FAssetRegistryState(
+        archive);
+
+// Drop the original binary as soon as CUE4Parse has materialized the registry.
+registryBytes =
+    Array.Empty<byte>();
+
+var classByPackage =
+    registry
+        .PreallocatedAssetDataBuffers
+        .GroupBy(
+            asset =>
+                asset.PackageName.Text,
+            StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(
+            group =>
+                group.Key,
+            group =>
+                group
+                    .Select(
+                        asset =>
+                            asset.AssetClass.Text)
+                    .Where(
+                        value =>
+                            !string.IsNullOrWhiteSpace(
+                                value))
+                    .ToHashSet(
+                        StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+
+static bool IsMeshClass(
+    IReadOnlyCollection<string>? classes) =>
+    classes is not null &&
+    classes.Any(
+        value =>
+            value.Contains(
+                "StaticMesh",
+                StringComparison.OrdinalIgnoreCase) ||
+            value.Contains(
+                "SkeletalMesh",
+                StringComparison.OrdinalIgnoreCase));
+
+static bool IsBlueprintClass(
+    IReadOnlyCollection<string>? classes) =>
+    classes is not null &&
+    classes.Any(
+        value =>
+            value.Contains(
+                "Blueprint",
+                StringComparison.OrdinalIgnoreCase));
+
+var nodes =
+    registry
+        .PreallocatedDependsNodeDataBuffers;
+
+var meshToBlueprints =
+    new Dictionary<
+        string,
+        SortedSet<string>>(
+            StringComparer.OrdinalIgnoreCase);
+
+var blueprintToMeshes =
+    new Dictionary<
+        string,
+        SortedSet<string>>(
+            StringComparer.OrdinalIgnoreCase);
+
+for (
+    var index = 0;
+    index < nodes.Length;
+    index++)
+{
+    var node =
+        nodes[index];
+
+    var meshPackage =
+        node.Identifier
+            ?.PackageName
+            .Text;
+
+    if (
+        string.IsNullOrWhiteSpace(
+            meshPackage) ||
+        !classByPackage.TryGetValue(
+            meshPackage,
+            out var meshClasses) ||
+        !IsMeshClass(
+            meshClasses))
+    {
+        continue;
+    }
+
+    foreach (
+        var referencerIndex
+        in node.Referencers)
+    {
+        if (
+            referencerIndex < 0 ||
+            referencerIndex >=
+                nodes.Length)
+        {
+            continue;
+        }
+
+        var blueprintPackage =
+            nodes[
+                referencerIndex]
+                .Identifier
+                ?.PackageName
+                .Text;
+
+        if (
+            string.IsNullOrWhiteSpace(
+                blueprintPackage) ||
+            !classByPackage.TryGetValue(
+                blueprintPackage,
+                out var blueprintClasses) ||
+            !IsBlueprintClass(
+                blueprintClasses))
+        {
+            continue;
+        }
+
+        if (
+            !meshToBlueprints.TryGetValue(
+                meshPackage,
+                out var blueprintSet))
+        {
+            blueprintSet =
+                new SortedSet<string>(
+                    StringComparer.OrdinalIgnoreCase);
+
+            meshToBlueprints[
+                meshPackage] =
+                blueprintSet;
+        }
+
+        blueprintSet.Add(
+            blueprintPackage);
+
+        if (
+            !blueprintToMeshes.TryGetValue(
+                blueprintPackage,
+                out var meshSet))
+        {
+            meshSet =
+                new SortedSet<string>(
+                    StringComparer.OrdinalIgnoreCase);
+
+            blueprintToMeshes[
+                blueprintPackage] =
+                meshSet;
+        }
+
+        meshSet.Add(
+            meshPackage);
+    }
+}
+
+Console.WriteLine(
+    $"Verified {meshToBlueprints.Count:N0} mesh packages with Blueprint referencers.");
+
+var temporary =
+    outputDirectory +
+    ".tmp";
+
+if (Directory.Exists(temporary))
+    Directory.Delete(
+        temporary,
+        recursive: true);
+
+Directory.CreateDirectory(
+    temporary);
+
+var meshShardDirectory =
+    Path.Combine(
+        temporary,
+        "mesh");
+
+var blueprintShardDirectory =
+    Path.Combine(
+        temporary,
+        "blueprint");
+
+Directory.CreateDirectory(
+    meshShardDirectory);
+
+Directory.CreateDirectory(
+    blueprintShardDirectory);
+
+var jsonOptions =
+    new JsonSerializerOptions
+    {
+        PropertyNamingPolicy =
+            JsonNamingPolicy.CamelCase,
+        WriteIndented =
+            false
+    };
+
+static byte FnvShard(
+    string value)
+{
+    uint hash =
+        2166136261;
+
+    foreach (
+        var item
+        in Encoding.UTF8.GetBytes(
+            value.ToLowerInvariant()))
+    {
+        hash ^=
+            item;
+
+        hash =
+            unchecked(
+                hash *
+                16777619);
+    }
+
+    return (byte)(
+        hash &
+        0xff);
+}
+
+static async Task<(
+    int Entries,
+    long Bytes)>
+WriteShardsAsync(
+    string root,
+    IReadOnlyDictionary<
+        string,
+        SortedSet<string>> source,
+    string valueProperty,
+    JsonSerializerOptions options,
+    CancellationToken cancellationToken)
+{
+    var buckets =
+        new Dictionary<
+            byte,
+            SortedDictionary<
+                string,
+                string[]>>();
+
+    foreach (
+        var pair in source)
+    {
+        var key =
+            pair.Key
+                .ToLowerInvariant();
+
+        var shard =
+            FnvShard(
+                key);
+
+        if (
+            !buckets.TryGetValue(
+                shard,
+                out var values))
+        {
+            values =
+                new SortedDictionary<
+                    string,
+                    string[]>(
+                        StringComparer.Ordinal);
+
+            buckets[
+                shard] =
+                values;
+        }
+
+        values[key] =
+            pair.Value
+                .ToArray();
+    }
+
+    long totalBytes = 0;
+
+    foreach (
+        var pair in buckets)
+    {
+        var path =
+            Path.Combine(
+                root,
+                $"{pair.Key:x2}.json.gz");
+
+        await using var file =
+            new FileStream(
+                path,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None);
+
+        await using var gzip =
+            new GZipStream(
+                file,
+                CompressionLevel.SmallestSize);
+
+        var payload =
+            new Dictionary<
+                string,
+                object?>
+            {
+                ["schema"] =
+                    "novasparx.asset-references.v1",
+
+                ["valueProperty"] =
+                    valueProperty,
+
+                ["items"] =
+                    pair.Value
+            };
+
+        await JsonSerializer
+            .SerializeAsync(
+                gzip,
+                payload,
+                options,
+                cancellationToken);
+
+        await gzip.FlushAsync(
+            cancellationToken);
+
+        totalBytes +=
+            file.Length;
+    }
+
+    return (
+        source.Count,
+        totalBytes);
+}
+
+var meshStats =
+    await WriteShardsAsync(
+        meshShardDirectory,
+        meshToBlueprints,
+        "blueprints",
+        jsonOptions,
+        timeout.Token);
+
+var blueprintStats =
+    await WriteShardsAsync(
+        blueprintShardDirectory,
+        blueprintToMeshes,
+        "meshes",
+        jsonOptions,
+        timeout.Token);
+
+var manifestOutput =
+    new
+    {
+        schema =
+            "novasparx.asset-references.v1",
+
+        builtAt =
+            DateTimeOffset.UtcNow,
+
+        fortniteVersion =
+            version,
+
+        hash =
+            "fnv1a32-low-byte",
+
+        meshToBlueprints =
+            new
+            {
+                entries =
+                    meshStats.Entries,
+
+                bytes =
+                    meshStats.Bytes,
+
+                path =
+                    "mesh/{shard}.json.gz"
+            },
+
+        blueprintToMeshes =
+            new
+            {
+                entries =
+                    blueprintStats.Entries,
+
+                bytes =
+                    blueprintStats.Bytes,
+
+                path =
+                    "blueprint/{shard}.json.gz"
+            }
+    };
+
+await File.WriteAllTextAsync(
+    Path.Combine(
+        temporary,
+        "manifest.json"),
+    JsonSerializer.Serialize(
+        manifestOutput,
+        new JsonSerializerOptions
+        {
+            PropertyNamingPolicy =
+                JsonNamingPolicy.CamelCase,
+            WriteIndented =
+                true
+        }),
+    timeout.Token);
+
+if (Directory.Exists(outputDirectory))
+{
+    Directory.Delete(
+        outputDirectory,
+        recursive: true);
+}
+
+Directory.Move(
+    temporary,
+    outputDirectory);
+
+Console.WriteLine(
+    $"Reference index written to {outputDirectory}.");
