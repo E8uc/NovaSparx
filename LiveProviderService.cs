@@ -28,7 +28,7 @@ namespace NovaSparx.Backend;
 /// </summary>
 public sealed class LiveProviderService : IDisposable
 {
-    public const string BackendVersion = "1.1.2";
+    public const string BackendVersion = "1.1.3";
 
     private readonly PublicFortniteSources _sources;
     private readonly ILogger<LiveProviderService> _log;
@@ -65,6 +65,24 @@ public sealed class LiveProviderService : IDisposable
     private sealed record LoadedAsset(
         UObject Object,
         string ResolvedPath);
+
+    private static readonly bool LowMemoryMode =
+        ReadBoolEnvironment(
+            "NOVASPARX_LOW_MEMORY_MODE",
+            fallback: false);
+
+    private static readonly int PreviewCacheMaxEntries =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_PREVIEW_CACHE_MAX_ENTRIES"),
+            out var previewCacheEntries)
+            ? Math.Clamp(
+                previewCacheEntries,
+                0,
+                64)
+            : LowMemoryMode
+                ? 1
+                : 64;
 
     private static readonly TimeSpan CacheTtl =
         TimeSpan.FromMinutes(
@@ -201,9 +219,7 @@ public sealed class LiveProviderService : IDisposable
             _lastError = null;
 
             var lowMemoryMode =
-                ReadBoolEnvironment(
-                    "NOVASPARX_LOW_MEMORY_MODE",
-                    fallback: false);
+                LowMemoryMode;
 
             var started =
                 DateTimeOffset.UtcNow;
@@ -583,12 +599,17 @@ public sealed class LiveProviderService : IDisposable
                     canonical,
                     loaded.ResolvedPath);
 
-            TrimPreviewCacheIfNeeded();
+            if (
+                PreviewCacheMaxEntries >
+                0)
+            {
+                _previewCache[canonical] =
+                    new CacheEntry(
+                        DateTimeOffset.UtcNow,
+                        envelope);
 
-            _previewCache[canonical] =
-                new CacheEntry(
-                    DateTimeOffset.UtcNow,
-                    envelope);
+                TrimPreviewCacheIfNeeded();
+            }
 
             return envelope;
         }
@@ -693,47 +714,68 @@ public sealed class LiveProviderService : IDisposable
             }
             else if (loaded.Object is UStaticMesh mesh)
             {
-                try
+                if (LowMemoryMode)
                 {
-                    var envelope =
-                        BuildStaticMeshEnvelope(
-                            mesh,
-                            canonical,
-                            loaded.ResolvedPath);
+                    // Inspection is used for routing/type decisions and must
+                    // stay cheap on tiny hosted containers. Geometry conversion
+                    // is deferred to the dedicated mesh endpoint.
+                    facts["geometryDeferred"] =
+                        true;
 
-                    materials =
-                        envelope.Manifest.Materials;
-
-                    references =
-                        envelope.Manifest.References ??
-                        [];
-
-                    fidelity =
-                        envelope.Manifest.MaterialFidelity;
-
-                    facts["lod"] =
-                        envelope.Manifest.Lod;
+                    facts["lodCount"] =
+                        mesh.RenderData
+                            ?.LODs
+                            ?.Length ??
+                        0;
 
                     facts["nanite"] =
-                        envelope.Manifest.IsNanite;
-
-                    facts["vertices"] =
-                        envelope.Manifest.Geometry.Positions.Length /
-                        3;
-
-                    facts["triangles"] =
-                        envelope.Manifest.Geometry.Indices.Length /
-                        3;
-
-                    facts["sections"] =
-                        envelope.Manifest.Sections.Length;
+                        mesh.RenderData
+                            ?.NaniteResources is not null;
                 }
-                catch (Exception ex)
+                else
                 {
-                    _log.LogDebug(
-                        ex,
-                        "StaticMesh inspection geometry/material pass failed for {Path}.",
-                        canonical);
+                    try
+                    {
+                        var envelope =
+                            BuildStaticMeshEnvelope(
+                                mesh,
+                                canonical,
+                                loaded.ResolvedPath);
+
+                        materials =
+                            envelope.Manifest.Materials;
+
+                        references =
+                            envelope.Manifest.References ??
+                            [];
+
+                        fidelity =
+                            envelope.Manifest.MaterialFidelity;
+
+                        facts["lod"] =
+                            envelope.Manifest.Lod;
+
+                        facts["nanite"] =
+                            envelope.Manifest.IsNanite;
+
+                        facts["vertices"] =
+                            envelope.Manifest.Geometry.Positions.Length /
+                            3;
+
+                        facts["triangles"] =
+                            envelope.Manifest.Geometry.Indices.Length /
+                            3;
+
+                        facts["sections"] =
+                            envelope.Manifest.Sections.Length;
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogDebug(
+                            ex,
+                            "StaticMesh inspection geometry/material pass failed for {Path}.",
+                            canonical);
+                    }
                 }
             }
 
@@ -834,7 +876,12 @@ public sealed class LiveProviderService : IDisposable
         // 1.2.2.202608.
         if (!mesh.TryConvert(
                 out CStaticMesh converted,
-                ENaniteMeshFormat.AllLayersNaniteLast))
+                LowMemoryMode
+                    ? ENaniteMeshFormat.OnlyNormalLODs
+                    : ENaniteMeshFormat.AllLayersNaniteLast,
+                LowMemoryMode
+                    ? ELodFormat.FirstLod
+                    : ELodFormat.AllLods))
         {
             throw new InvalidOperationException(
                 "CUE4Parse could not convert this StaticMesh.");
@@ -1076,6 +1123,12 @@ public sealed class LiveProviderService : IDisposable
             var materials =
                 new PreviewMaterial[materialCount];
 
+            var resolveMaterials =
+                ReadBoolEnvironment(
+                    "NOVASPARX_RESOLVE_MATERIALS",
+                    fallback:
+                        !LowMemoryMode);
+
             var referenceList =
                 new List<AssetReference>();
 
@@ -1115,7 +1168,9 @@ public sealed class LiveProviderService : IDisposable
 
                 try
                 {
-                    if (section?.Material?
+                    if (
+                        resolveMaterials &&
+                        section?.Material?
                             .Load<UMaterialInterface>() is
                         { } loadedMaterial)
                     {
@@ -1350,7 +1405,37 @@ public sealed class LiveProviderService : IDisposable
 
     private void TrimPreviewCacheIfNeeded()
     {
-        if (_previewCache.Count <= 300)
+        if (
+            PreviewCacheMaxEntries <=
+            0)
+        {
+            _previewCache.Clear();
+            return;
+        }
+
+        var now =
+            DateTimeOffset.UtcNow;
+
+        foreach (
+            var pair in
+            _previewCache.ToArray())
+        {
+            if (
+                now -
+                pair.Value.CreatedAt >=
+                CacheTtl)
+            {
+                _previewCache.TryRemove(
+                    pair.Key,
+                    out _);
+            }
+        }
+
+        var overflow =
+            _previewCache.Count -
+            PreviewCacheMaxEntries;
+
+        if (overflow <= 0)
             return;
 
         var oldest =
@@ -1358,7 +1443,7 @@ public sealed class LiveProviderService : IDisposable
                 .OrderBy(
                     pair =>
                         pair.Value.CreatedAt)
-                .Take(75)
+                .Take(overflow)
                 .Select(
                     pair =>
                         pair.Key)
