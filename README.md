@@ -121,6 +121,6 @@ NovaSparx keeps the previous operations for compatibility and adds the compact c
 
 ## Limits
 
-The backend keeps hard mesh, texture, timeout, and response-size limits so one asset cannot exhaust the service. The current low-memory deployment profile caps client packages at 24 MiB, disables expensive optional provider features by default, and keeps the accepted configurable range at 8–60 MiB. Device caching independently refuses packages above 24 MiB.
+The backend keeps hard mesh, texture, timeout, and response-size limits so one asset cannot exhaust the service. The current low-memory deployment profile caps client packages at 24 MiB, disables expensive optional provider features by default, and keeps the accepted configurable range at 8–60 MiB. Device caching independently refuses packages above 12 MiB on phones/tablets and 24 MiB on desktop.
 
 If an asset cannot be represented honestly, NovaSparx returns metadata/references rather than inventing a fake preview.
