@@ -68,6 +68,21 @@ public sealed class NovaHybridFileProvider : AbstractVfsFileProvider
                 IsFortnitePakFile(file.FileName))
             .ToArray();
 
+        // Keep only Content/Paks entries reachable from registered archives.
+        // The previous archive callback captured the entire Fortnite manifest,
+        // which kept a very large object graph alive for the lifetime of the
+        // provider and could exhaust small container memory.
+        var filesByName = files
+            .GroupBy(
+                file =>
+                    file.FileName
+                        .Replace('\\', '/'),
+                StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.First(),
+                StringComparer.OrdinalIgnoreCase);
+
         foreach (var file in files)
         {
             cancellationToken
@@ -97,16 +112,10 @@ public sealed class NovaHybridFileProvider : AbstractVfsFileProvider
                         var normalized =
                             requestedName.Replace('\\', '/');
 
-                        var match =
-                            manifest.Files.FirstOrDefault(
-                                candidate =>
-                                    candidate.FileName
-                                        .Replace('\\', '/')
-                                        .Equals(
-                                            normalized,
-                                            StringComparison.OrdinalIgnoreCase));
-
-                        if (match is null)
+                        if (
+                            !filesByName.TryGetValue(
+                                normalized,
+                                out var match))
                         {
                             throw new FileNotFoundException(
                                 $"Manifest stream was not found: {requestedName}");
