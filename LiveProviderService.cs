@@ -28,7 +28,7 @@ namespace NovaSparx.Backend;
 /// </summary>
 public sealed class LiveProviderService : IDisposable
 {
-    public const string BackendVersion = "1.1.0";
+    public const string BackendVersion = "1.1.1";
 
     private readonly PublicFortniteSources _sources;
     private readonly ILogger<LiveProviderService> _log;
@@ -81,6 +81,32 @@ public sealed class LiveProviderService : IDisposable
     {
         _sources = sources;
         _log = log;
+    }
+
+    private static bool ReadBoolEnvironment(
+        string name,
+        bool fallback)
+    {
+        var value =
+            Environment.GetEnvironmentVariable(
+                name);
+
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        if (bool.TryParse(
+                value,
+                out var parsed))
+        {
+            return parsed;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "1" or "yes" or "on" => true,
+            "0" or "no" or "off" => false,
+            _ => fallback
+        };
     }
 
     public bool IsReady =>
@@ -174,6 +200,11 @@ public sealed class LiveProviderService : IDisposable
 
             _lastError = null;
 
+            var lowMemoryMode =
+                ReadBoolEnvironment(
+                    "NOVASPARX_LOW_MEMORY_MODE",
+                    fallback: false);
+
             var started =
                 DateTimeOffset.UtcNow;
 
@@ -205,7 +236,10 @@ public sealed class LiveProviderService : IDisposable
                             true,
 
                         ReadNaniteData =
-                            true,
+                            ReadBoolEnvironment(
+                                "NOVASPARX_READ_NANITE_DATA",
+                                fallback:
+                                    !lowMemoryMode),
 
                         ReadShaderMaps =
                             false,
@@ -246,60 +280,96 @@ public sealed class LiveProviderService : IDisposable
                     "Fortnite",
                     cancellationToken);
 
-                // Fortnite_Studio extends coverage for UEFN and GameFeatures.
-                try
+                // Fortnite_Studio can approximately double the manifest/archive
+                // metadata retained by CUE4Parse. Keep it opt-in on small
+                // containers; core Fortnite still covers ordinary live assets.
+                if (
+                    ReadBoolEnvironment(
+                        "NOVASPARX_ENABLE_STUDIO_MANIFEST",
+                        fallback:
+                            !lowMemoryMode))
                 {
-                    var studio =
-                        await _sources.GetStudioManifestAsync(
-                            cancellationToken);
-
-                    if (studio is not null)
+                    try
                     {
-                        var (
-                            studioManifest,
-                            studioVersion) =
-                                studio.Value;
-
-                        _studioManifestVersion =
-                            studioVersion;
-
-                        await provider.RegisterManifestAsync(
-                            studioManifest,
-                            "Fortnite_Studio",
-                            cancellationToken);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(
-                        ex,
-                        "Fortnite_Studio manifest registration failed. Core Fortnite will continue.");
-                }
-
-                // Streamed texture IoStore TOC.
-                try
-                {
-                    var externalToc =
-                        await _sources
-                            .GetTextureStreamingTocAsync(
-                                liveManifest,
+                        var studio =
+                            await _sources.GetStudioManifestAsync(
                                 cancellationToken);
 
-                    if (externalToc is not null)
+                        if (studio is not null)
+                        {
+                            var (
+                                studioManifest,
+                                studioVersion) =
+                                    studio.Value;
+
+                            _studioManifestVersion =
+                                studioVersion;
+
+                            await provider.RegisterManifestAsync(
+                                studioManifest,
+                                "Fortnite_Studio",
+                                cancellationToken);
+                        }
+                    }
+                    catch (Exception ex)
                     {
-                        _textureStreamingTocRegistered =
-                            await provider
-                                .RegisterExternalOnDemandTocAsync(
-                                    externalToc.Name,
-                                    externalToc.Bytes,
-                                    cancellationToken);
+                        _log.LogWarning(
+                            ex,
+                            "Fortnite_Studio manifest registration failed. Core Fortnite will continue.");
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    _log.LogWarning(
-                        ex,
-                        "Texture-streaming TOC registration failed. Geometry can still work.");
+                    _log.LogInformation(
+                        "Fortnite_Studio manifest disabled by low-memory profile.");
+                }
+
+                // Streamed texture TOC is optional for geometry and can add
+                // a noticeable peak allocation while the provider is mounting.
+                if (
+                    ReadBoolEnvironment(
+                        "NOVASPARX_ENABLE_TEXTURE_STREAMING_TOC",
+                        fallback:
+                            !lowMemoryMode))
+                {
+                    try
+                    {
+                        var externalToc =
+                            await _sources
+                                .GetTextureStreamingTocAsync(
+                                    liveManifest,
+                                    cancellationToken);
+
+                        if (externalToc is not null)
+                        {
+                            _textureStreamingTocRegistered =
+                                await provider
+                                    .RegisterExternalOnDemandTocAsync(
+                                        externalToc.Name,
+                                        externalToc.Bytes,
+                                        cancellationToken);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning(
+                            ex,
+                            "Texture-streaming TOC registration failed. Geometry can still work.");
+                    }
+                }
+
+                // Archive callbacks no longer retain the complete manifest.
+                // Releasing this reference before MountAsync lowers peak memory
+                // on free/small containers.
+                liveManifest = null!;
+
+                if (lowMemoryMode)
+                {
+                    GC.Collect(
+                        GC.MaxGeneration,
+                        GCCollectionMode.Aggressive,
+                        blocking: true,
+                        compacting: true);
                 }
 
                 provider.Initialize();
