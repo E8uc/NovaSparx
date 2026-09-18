@@ -149,9 +149,81 @@ var registryEntry =
         .Select(
             pair =>
                 pair.Value)
-        .FirstOrDefault()
-    ?? throw new InvalidOperationException(
-        "Mounted Fortnite archives do not expose AssetRegistry.bin.");
+        .FirstOrDefault();
+
+if (registryEntry is null)
+{
+    Console.WriteLine(
+        "Current live Fortnite delivery does not expose AssetRegistry.bin through the mounted provider. " +
+        "Writing an unavailable manifest; runtime JSON verification remains the fallback.");
+
+    if (Directory.Exists(outputDirectory))
+    {
+        Directory.Delete(
+            outputDirectory,
+            recursive: true);
+    }
+
+    Directory.CreateDirectory(
+        outputDirectory);
+
+    var unavailable =
+        new
+        {
+            schema =
+                "novasparx.asset-references.v1",
+
+            builtAt =
+                DateTimeOffset.UtcNow,
+
+            fortniteVersion =
+                version,
+
+            available =
+                false,
+
+            reason =
+                "AssetRegistry.bin is not exposed by the current live manifest/provider.",
+
+            hash =
+                "fnv1a32-low-byte",
+
+            meshToBlueprints =
+                new
+                {
+                    entries = 0,
+                    bytes = 0L,
+                    path =
+                        "mesh/{shard}.json.gz"
+                },
+
+            blueprintToMeshes =
+                new
+                {
+                    entries = 0,
+                    bytes = 0L,
+                    path =
+                        "blueprint/{shard}.json.gz"
+                }
+        };
+
+    await File.WriteAllTextAsync(
+        Path.Combine(
+            outputDirectory,
+            "manifest.json"),
+        JsonSerializer.Serialize(
+            unavailable,
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy =
+                    JsonNamingPolicy.CamelCase,
+                WriteIndented =
+                    true
+            }),
+        timeout.Token);
+
+    return;
+}
 
 Console.WriteLine(
     $"Parsing {registryEntry.Path}...");
