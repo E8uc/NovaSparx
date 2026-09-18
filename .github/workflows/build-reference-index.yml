@@ -46,6 +46,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          generated="$(mktemp -d)"
+          cp -a web/reference-index/. "$generated/"
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          rm -rf web/reference-index
+          mkdir -p web/reference-index
+          cp -a "$generated"/. web/reference-index/
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -57,5 +67,4 @@ jobs:
           fi
 
           git commit -m "Build NovaSparx AssetRegistry reference index"
-          git pull --rebase origin main
           git push origin HEAD:main
