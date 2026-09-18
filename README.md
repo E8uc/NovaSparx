@@ -51,6 +51,49 @@ NovaSparx does not depend on one all-or-nothing path. The web runtime tries inde
 
 This lets NovaSparx move work from hosted RAM to each requesting device incrementally instead of requiring a risky rewrite in one step.
 
+## Browser memory guard
+
+The browser runtime treats mobile memory as a hard safety boundary instead of
+assuming the user's device can absorb server-sized workloads.
+
+- iOS mesh packages are capped at 8 MiB before `arrayBuffer()`; other mobile
+  devices use 12 MiB.
+- Geometry is validated before WebGL allocation (100k vertices / 300k indices on
+  iOS, 160k / 480k on other mobile devices).
+- Mobile rendering lowers framebuffer size, material count, texture count and
+  mipmap use.
+- WebGL contexts are explicitly released after PNG capture and temporary
+  canvases are shrunk immediately.
+- device cache writes check storage headroom and mobile cache counts are small.
+- page lifecycle changes cancel active requests and release in-memory mesh
+  caches.
+- when a browser exposes `measureUserAgentSpecificMemory()`, NovaSparx can use
+  it as an extra signal; it is never required for safety.
+
+No browser API can reliably predict every future tab/process kill, especially on
+WebKit, so the guard uses conservative pre-allocation budgets rather than
+claiming crash-proof execution.
+
+## Type-safe visual associations
+
+NovaSparx treats asset class as evidence. Similar filenames alone are never
+allowed to change the asset family.
+
+- Texture -> texture/image only.
+- Material -> verified texture dependencies, never an arbitrary mesh.
+- Blueprint -> mesh references found in the Blueprint export/dependency data.
+- Mesh -> direct mesh, optionally annotated with a verified Blueprint referencer.
+- Unknown -> metadata/reference fallback unless type evidence becomes available.
+
+For reverse Mesh -> Blueprint relationships the preferred zero-runtime-RAM
+layer is a sharded index generated from Unreal AssetRegistry referencers in
+GitHub Actions. If the current Fortnite delivery does not expose
+`AssetRegistry.bin`, the generator publishes an unavailable manifest and the
+browser falls back to FNAA path shortlisting plus exact Blueprint export-JSON
+reference verification. This keeps the hosted backend out of the reverse-index
+work and avoids loading a global reference graph into a phone or small
+container.
+
 ## Browser mesh endpoint
 
 `GET /v1/client-mesh?path=/Game/...`
