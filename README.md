@@ -2,7 +2,7 @@
 
 NovaSparx is a web-first Fortnite asset preview backend. The user does **not** need Fortnite, FModel, UEFN, or local Fortnite files installed.
 
-The backend discovers and converts live Fortnite assets with CUE4Parse. Textures are decoded to PNG by the backend. Mesh geometry is transferred in a compact binary package and the **user's own browser/device renders the 3D preview**. NovaSparx never uses one visitor's device to process another visitor's request.
+NovaSparx uses a layered browser-first runtime. The user's own device is preferred whenever it already has enough validated data; server parsing remains a compatibility/fallback layer while the browser parser is expanded. Mesh rendering always happens on the requesting user's device. NovaSparx never uses one visitor's device to process another visitor's request.
 
 ## Web rendering architecture
 
@@ -15,8 +15,9 @@ Cloudflare / E8 edge
         |
         |  private NovaLink or authenticated origin request
         v
-NovaSparx backend
-  - live Fortnite manifest + Fortnite_Studio
+NovaSparx fallback backend
+  - live Fortnite manifest
+  - optional Fortnite_Studio / streamed texture TOCs
   - mappings / AES / IoStore OnDemand
   - CUE4Parse asset loading
   - texture decode
@@ -33,6 +34,22 @@ User's browser
 ```
 
 This keeps GPU rendering on the device that requested the preview instead of on the small backend.
+
+## Layered runtime
+
+NovaSparx does not depend on one all-or-nothing path. The web runtime tries independent layers in order and falls through safely:
+
+1. **Device memory** — reuse a validated mesh already open in the current page.
+2. **Device cache** — reuse a validated NSMESH1 package stored by that browser. Repeat views can work without asking the parsing backend again.
+3. **Browser parser / WebAssembly contract** — a local parser can register as `NovaSparxLocalParser` or `NovaSparxWasm`. This is the migration point for pure client-side Fortnite parsing. It is reported unavailable until a real parser engine is registered; the UI never pretends this layer is active.
+4. **Backend binary** — CUE4Parse extracts a compact `NSMESH1` package; the requesting device parses/renders it.
+5. **Backend JSON compatibility** — older `/v1/resolve` fallback.
+6. **Universal references / texture preview** — verified referenced visual data when direct mesh output is not available.
+7. **Evidence fallback** — truthful metadata instead of fabricated art.
+
+`web/novasparx-browser-transport.js` provides bounded HTTP Range reads (maximum 4 MiB per request) for future browser/WASM parsers. `web/novasparx-local-parser.js` is the stable local-parser registration contract, and `web/novasparx-layers.js` owns layer selection, device cache limits, and fallback tracing.
+
+This lets NovaSparx move work from hosted RAM to each requesting device incrementally instead of requiring a risky rewrite in one step.
 
 ## Browser mesh endpoint
 
@@ -104,6 +121,6 @@ NovaSparx keeps the previous operations for compatibility and adds the compact c
 
 ## Limits
 
-The backend keeps hard mesh, texture, timeout, and response-size limits so one asset cannot exhaust the service. `NOVASPARX_CLIENT_PACKAGE_MAX_BYTES` can tune the browser package ceiling; the default is 48 MiB and the accepted range is 8–60 MiB.
+The backend keeps hard mesh, texture, timeout, and response-size limits so one asset cannot exhaust the service. The current low-memory deployment profile caps client packages at 24 MiB, disables expensive optional provider features by default, and keeps the accepted configurable range at 8–60 MiB. Device caching independently refuses packages above 24 MiB.
 
 If an asset cannot be represented honestly, NovaSparx returns metadata/references rather than inventing a fake preview.
