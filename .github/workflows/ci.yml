@@ -34,6 +34,10 @@ jobs:
           node --check web/novasparx-browser-transport.js
           node --check web/novasparx-local-parser.js
           node --check web/novasparx-layers.js
+          node --check web/novasparx-browser-guard.js
 
       - name: Run browser format self-test
         run: node web/novasparx-viewer.selftest.mjs
+
+      - name: Run browser memory guard self-test
+        run: node web/novasparx-browser-guard.selftest.mjs
