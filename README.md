@@ -9,45 +9,47 @@ NovaSparx uses a layered browser-first runtime. The user's own device is preferr
 ```text
 Browser / phone / tablet / desktop
         |
-        |  asset path
+        |  tiny bootstrap request
         v
 Cloudflare / E8 edge
+  - current AES metadata
+  - current manifest metadata
+  - strict CDN allow-list
+  - bounded 4 MiB Range relay only when direct CORS fails
         |
-        |  private NovaLink or authenticated origin request
+        |  direct CDN byte ranges whenever possible
         v
-NovaSparx fallback backend
-  - live Fortnite manifest
-  - optional Fortnite_Studio / streamed texture TOCs
-  - mappings / AES / IoStore OnDemand
-  - CUE4Parse asset loading
-  - texture decode
-  - mesh extraction only
+User device Web Worker / WASM parser
+  - fetch only required package/chunk ranges
+  - decode and parse only the requested asset
+  - release raw buffers after use
+  - normalize geometry/material metadata locally
         |
-        |  compact NSMESH1 geometry + material references
-        v
-User's browser
-  - WebGL rendering
-  - orbit / zoom
-  - material texture loading
-  - adaptive pixel ratio for mobile devices
-  - PNG capture
+        +--> WebGL 3D viewer
+        +--> PNG / JSON / GLB download
+        +--> UEFN-ready export
+
+Legacy NovaSparx backend
+  - compatibility fallback while browser parsing coverage is incomplete
+  - no longer the target architecture for ordinary mesh extraction
 ```
 
-This keeps GPU rendering on the device that requested the preview instead of on the small backend.
+The edge tells the device where the data is and relays only bounded byte ranges when necessary. The requesting device is the compute engine; one visitor never processes another visitor's request.
 
 ## Layered runtime
 
 NovaSparx does not depend on one all-or-nothing path. The web runtime tries independent layers in order and falls through safely:
 
 1. **Device memory** — reuse a validated mesh already open in the current page.
-2. **Device cache** — reuse a validated NSMESH1 package stored by that browser. Repeat views can work without asking the parsing backend again.
-3. **Browser parser / WebAssembly contract** — a local parser can register as `NovaSparxLocalParser` or `NovaSparxWasm`. This is the migration point for pure client-side Fortnite parsing. It is reported unavailable until a real parser engine is registered; the UI never pretends this layer is active.
-4. **Backend binary** — CUE4Parse extracts a compact `NSMESH1` package; the requesting device parses/renders it.
-5. **Backend JSON compatibility** — older `/v1/resolve` fallback.
-6. **Universal references / texture preview** — verified referenced visual data when direct mesh output is not available.
-7. **Evidence fallback** — truthful metadata instead of fabricated art.
+2. **Device cache** — reuse a validated NSMESH1 package stored by that browser.
+3. **Edge metadata + byte ranges** — Cloudflare returns current AES/manifest metadata and relays only bounded CDN ranges when direct browser CORS is unavailable.
+4. **Browser parser / WebAssembly contract** — a local parser registers as `NovaSparxLocalParser` and receives the edge bootstrap plus the direct-first Range transport. It is still reported unavailable until a real parser engine is registered.
+5. **Backend binary** — temporary compatibility fallback while browser parsing coverage is incomplete.
+6. **Backend JSON compatibility** — older `/v1/resolve` fallback.
+7. **Universal references / texture preview** — verified referenced visual data when direct mesh output is not available.
+8. **Evidence fallback** — truthful metadata instead of fabricated art.
 
-`web/novasparx-browser-transport.js` provides bounded HTTP Range reads (maximum 4 MiB per request) for future browser/WASM parsers. `web/novasparx-local-parser.js` is the stable local-parser registration contract, and `web/novasparx-layers.js` owns layer selection, device cache limits, and fallback tracing.
+`web/novasparx-browser-transport.js` now uses a direct-CDN-first strategy and automatically falls back to the Cloudflare `/nova-edge/range` relay. `bootstrap()` retrieves the small `novasparx.edge-bootstrap.v1` document containing current AES and manifest candidates. `web/novasparx-local-parser.js` passes that bootstrap and transport into the registered device parser, and `web/novasparx-layers.js` owns layer selection, device cache limits, and fallback tracing.
 
 This lets NovaSparx move work from hosted RAM to each requesting device incrementally instead of requiring a risky rewrite in one step.
 
@@ -164,6 +166,6 @@ NovaSparx keeps the previous operations for compatibility and adds the compact c
 
 ## Limits
 
-The backend keeps hard mesh, texture, timeout, and response-size limits so one asset cannot exhaust the service. The current low-memory deployment profile caps client packages at 24 MiB, disables expensive optional provider features by default, and keeps the accepted configurable range at 8–60 MiB. Device caching independently refuses packages above 12 MiB on phones/tablets and 24 MiB on desktop.
+The backend keeps hard mesh, texture, timeout, and response-size limits so one asset cannot exhaust the service. The current 256 MiB low-memory deployment profile caps client packages at 8 MiB, disables expensive optional provider features by default, and keeps the accepted configurable range at 8–60 MiB. Device caching independently refuses packages above 12 MiB on phones/tablets and 24 MiB on desktop.
 
 If an asset cannot be represented honestly, NovaSparx returns metadata/references rather than inventing a fake preview.
