@@ -98,6 +98,34 @@ await provider.RegisterManifestAsync(
     "Fortnite",
     timeout.Token);
 
+try
+{
+    var studio =
+        await sources.GetStudioManifestAsync(
+            timeout.Token);
+
+    if (studio is not null)
+    {
+        var (
+            studioManifest,
+            studioVersion) =
+            studio.Value;
+
+        Console.WriteLine(
+            $"Registering Fortnite_Studio archives for {studioVersion}...");
+
+        await provider.RegisterManifestAsync(
+            studioManifest,
+            "Fortnite_Studio",
+            timeout.Token);
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine(
+        $"Fortnite_Studio manifest warning: {ex.Message}");
+}
+
 provider.Initialize();
 
 try
@@ -124,6 +152,26 @@ Console.WriteLine(
     "Mounting Fortnite archives to locate AssetRegistry.bin...");
 
 await provider.MountAsync();
+
+try
+{
+    provider.LoadVirtualPaths();
+}
+catch (Exception ex)
+{
+    Console.WriteLine(
+        $"Virtual path warning: {ex.Message}");
+}
+
+try
+{
+    provider.PostMount();
+}
+catch (Exception ex)
+{
+    Console.WriteLine(
+        $"Post-mount warning: {ex.Message}");
+}
 
 var registryEntry =
     provider.Files
