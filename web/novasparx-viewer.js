@@ -5,6 +5,10 @@ export class NovaSparxViewer {
   constructor(canvas, options = {}) {
     if (!canvas?.getContext) throw new TypeError('NovaSparxViewer requires a canvas.');
     this.canvas = canvas;
+    this.guard =
+      globalThis.NovaSparxBrowserGuard ||
+      null;
+
     this.options = {
       textureUrlForPath: options.textureUrlForPath || null,
       fetch: options.fetch || globalThis.fetch?.bind(globalThis),
@@ -15,7 +19,24 @@ export class NovaSparxViewer {
     };
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
-    this.renderer.setPixelRatio(Math.max(1, Math.min(this.options.pixelRatio, 2.5)));
+
+    const guardState =
+      this.guard?.status?.() || {};
+
+    const maxPixelRatio =
+      guardState.isMobile
+        ? 1.5
+        : 2.5;
+
+    this.renderer.setPixelRatio(
+      Math.max(
+        1,
+        Math.min(
+          this.options.pixelRatio,
+          maxPixelRatio
+        )
+      )
+    );
     this.renderer.setClearColor(this.options.background, 1);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.scene = new THREE.Scene();
@@ -34,6 +55,24 @@ export class NovaSparxViewer {
     this.pointer = null;
     this.frame = 0;
     this.textureCache = new Map();
+
+    this.contextLost =
+      () => {
+        this.guard?.setPressure?.(
+          "high",
+          "webgl-context-lost"
+        );
+
+        this.options.onWarning(
+          "NovaSparx paused rendering because the browser lost its WebGL context."
+        );
+      };
+
+    this.canvas.addEventListener(
+      "webglcontextlost",
+      this.contextLost
+    );
+
     this.#events();
     this.resizeObserver = new ResizeObserver(() => this.requestRender());
     this.resizeObserver.observe(canvas);
@@ -43,6 +82,13 @@ export class NovaSparxViewer {
   async loadFromUrl(url, fetchOptions) {
     if (!this.options.fetch) throw new Error('Fetch is unavailable.');
     const response = await this.options.fetch(url, fetchOptions || this.options.fetchOptions);
+
+    this.guard
+      ?.assertResponseBudget?.(
+        response,
+        "mesh"
+      );
+
     if (!response.ok) {
       let message = `NovaSparx mesh request failed (${response.status}).`;
       try { message = (await response.json())?.error || message; } catch {}
@@ -55,6 +101,42 @@ export class NovaSparxViewer {
     const parsed = parseNovaMesh(buffer);
     this.#clearModel();
     const { header, geometry } = parsed;
+
+    const guardManifest = {
+      geometry,
+      metadata: {
+        vertexCount:
+          geometry.positions.length / 3
+      }
+    };
+
+    this.guard
+      ?.assertManifestBudget?.(
+        guardManifest
+      );
+
+    const policy =
+      this.guard
+        ?.renderPolicy?.(
+          guardManifest
+        ) || {};
+
+    this.textureModes =
+      new Set(
+        policy.textureModes ||
+        [
+          "base",
+          "normal",
+          "emissive",
+          "opacity"
+        ]
+      );
+
+    this.remainingTextureLoads =
+      Number(
+        policy.maxTextureLoads
+      ) ||
+      24;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(geometry.positions, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(geometry.normals, 3));
@@ -70,7 +152,12 @@ export class NovaSparxViewer {
     const mesh = new THREE.Mesh(g, materials);
     const center = header.bounds?.center || [0, 0, 0];
     const radius = Math.max(Number(header.bounds?.radius || 1), 0.0001);
-    mesh.position.set(-center[0], -center[1], -center[2]);
+    mesh.position.set(
+      -center[0] / radius,
+      -center[1] / radius,
+      -center[2] / radius
+    );
+
     mesh.scale.setScalar(1 / radius);
     this.root.add(mesh);
     this.model = mesh;
@@ -97,13 +184,21 @@ export class NovaSparxViewer {
     material.emissiveIntensity = 1;
 
     const slots = [
-      ['map', source.baseColorTexture, THREE.SRGBColorSpace],
-      ['normalMap', source.normalTexture, THREE.NoColorSpace],
-      ['emissiveMap', source.emissiveTexture, THREE.SRGBColorSpace],
-      ['alphaMap', source.opacityTexture, THREE.NoColorSpace],
+      ['base', 'map', source.baseColorTexture, THREE.SRGBColorSpace],
+      ['normal', 'normalMap', source.normalTexture, THREE.NoColorSpace],
+      ['emissive', 'emissiveMap', source.emissiveTexture, THREE.SRGBColorSpace],
+      ['opacity', 'alphaMap', source.opacityTexture, THREE.NoColorSpace],
     ];
-    await Promise.all(slots.map(async ([property, path, colorSpace]) => {
-      if (!path) return;
+
+    await Promise.all(slots.map(async ([mode, property, path, colorSpace]) => {
+      if (
+        !path ||
+        !this.textureModes?.has(mode) ||
+        this.remainingTextureLoads <= 0
+      ) return;
+
+      this.remainingTextureLoads--;
+
       const texture = await this.#texture(path, colorSpace);
       if (texture) material[property] = texture;
     }));
@@ -213,6 +308,13 @@ export class NovaSparxViewer {
     for (const texture of this.textureCache.values()) texture.dispose();
     this.textureCache.clear();
     this.renderer.dispose();
+    this.renderer.forceContextLoss?.();
+
+    this.canvas.removeEventListener(
+      "webglcontextlost",
+      this.contextLost
+    );
+
     this.canvas.removeEventListener('pointerdown', this.down);
     this.canvas.removeEventListener('pointermove', this.move);
     this.canvas.removeEventListener('pointerup', this.up);
