@@ -185,6 +185,9 @@ public sealed class NovaRequestDispatcher
             clientRendered3d = true,
             clientMeshBinary =
                 ClientMeshPackageService.Schema,
+            typeSafePreviewRouting = true,
+            assetRegistryReferencerIndex =
+                "offline-sharded-v1",
             staticMesh = true,
             skeletalMesh = true,
             inspector = "universal-uobject-metadata-v1"
