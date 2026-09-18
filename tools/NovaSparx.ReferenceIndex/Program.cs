@@ -3,12 +3,10 @@ using System.Text;
 using System.Text.Json;
 using CUE4Parse.UE4.AssetRegistry;
 using CUE4Parse.UE4.AssetRegistry.Objects;
-using CUE4Parse.UE4.Readers;
+using CUE4Parse.UE4.IO;
 using CUE4Parse.UE4.Versions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NovaSparx.Backend;
-
-const long MaxRegistryBytes = 768L * 1024L * 1024L;
 
 var outputDirectory =
     args.Length > 0
@@ -51,93 +49,119 @@ var (
     await sources.GetLiveManifestAsync(
         timeout.Token);
 
-var registryFile =
-    manifest.Files
+var versions =
+    new VersionContainer(
+        EGame.GAME_UE6_0);
+
+using var provider =
+    new NovaHybridFileProvider(
+        new DirectoryInfo(
+            sources.TocCache),
+        versions)
+    {
+        LoadOnDemandTocs =
+            true,
+
+        ReadNaniteData =
+            false,
+
+        ReadShaderMaps =
+            false,
+
+        ReadScriptData =
+            false,
+
+        UseLazyPackageSerialization =
+            true
+    };
+
+provider.OnDemandOptions =
+    new IoStoreOnDemandOptions
+    {
+        ChunkHostUri =
+            sources.GetOnDemandHostUri(),
+
+        ChunkCacheDirectory =
+            new DirectoryInfo(
+                sources.ChunkCache),
+
+        Timeout =
+            TimeSpan.FromSeconds(
+                120)
+    };
+
+Console.WriteLine(
+    $"Registering live Fortnite archives for {version}...");
+
+await provider.RegisterManifestAsync(
+    manifest,
+    "Fortnite",
+    timeout.Token);
+
+provider.Initialize();
+
+try
+{
+    var keys =
+        await sources.GetAesKeysAsync(
+            timeout.Token);
+
+    foreach (
+        var pair in keys)
+    {
+        await provider.SubmitKeyAsync(
+            pair.Key,
+            pair.Value);
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine(
+        $"AES key source warning: {ex.Message}");
+}
+
+Console.WriteLine(
+    "Mounting Fortnite archives to locate AssetRegistry.bin...");
+
+await provider.MountAsync();
+
+var registryEntry =
+    provider.Files
         .Where(
-            file =>
-                file.FileName
+            pair =>
+                pair.Key
                     .Replace('\\', '/')
                     .EndsWith(
                         "AssetRegistry.bin",
                         StringComparison.OrdinalIgnoreCase))
         .OrderBy(
-            file =>
+            pair =>
                 string.Equals(
-                    file.FileName
+                    pair.Key
                         .Replace('\\', '/'),
                     "FortniteGame/AssetRegistry.bin",
                     StringComparison.OrdinalIgnoreCase)
                     ? 0
                     : 1)
         .ThenBy(
-            file =>
-                file.FileName.Length)
+            pair =>
+                pair.Key.Length)
+        .Select(
+            pair =>
+                pair.Value)
         .FirstOrDefault()
     ?? throw new InvalidOperationException(
-        "Current Fortnite manifest does not expose AssetRegistry.bin.");
+        "Mounted Fortnite archives do not expose AssetRegistry.bin.");
 
 Console.WriteLine(
-    $"Reading {registryFile.FileName} for {version}...");
-
-await using var registryStream =
-    registryFile.GetStream();
-
-using var memory =
-    new MemoryStream();
-
-var buffer =
-    new byte[
-        1024 * 1024];
-
-while (true)
-{
-    var read =
-        await registryStream.ReadAsync(
-            buffer,
-            timeout.Token);
-
-    if (read == 0)
-        break;
-
-    if (
-        memory.Length +
-        read >
-        MaxRegistryBytes)
-    {
-        throw new InvalidOperationException(
-            "AssetRegistry.bin exceeded the 768 MiB CI safety limit.");
-    }
-
-    await memory.WriteAsync(
-        buffer.AsMemory(
-            0,
-            read),
-        timeout.Token);
-}
-
-var registryBytes =
-    memory.ToArray();
-
-Console.WriteLine(
-    $"Parsing AssetRegistry.bin ({registryBytes.Length:N0} bytes)...");
-
-var versions =
-    new VersionContainer(
-        EGame.GAME_UE6_0);
+    $"Parsing {registryEntry.Path}...");
 
 using var archive =
-    new FByteArchive(
-        registryFile.FileName,
-        registryBytes,
-        versions);
+    registryEntry.CreateReader();
 
 var registry =
     new FAssetRegistryState(
         archive);
-
-// Drop the original binary as soon as CUE4Parse has materialized the registry.
-registryBytes =
-    Array.Empty<byte>();
 
 var classByPackage =
     registry
