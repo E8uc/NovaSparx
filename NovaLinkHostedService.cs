@@ -307,9 +307,32 @@ public sealed class NovaLinkHostedService : BackgroundService
                         ?.IsCancellationRequested ==
                     true)
             {
+                var cancelledId =
+                    activeRequestId;
+
                 _log.LogDebug(
                     "NovaLink request {RequestId} cancelled.",
-                    activeRequestId);
+                    cancelledId);
+
+                if (
+                    !cancellationToken
+                        .IsCancellationRequested &&
+                    !string.IsNullOrWhiteSpace(
+                        cancelledId) &&
+                    socket.State ==
+                        WebSocketState.Open)
+                {
+                    await SendControlAsync(
+                        socket,
+                        new
+                        {
+                            type =
+                                "cancelled",
+                            id =
+                                cancelledId
+                        },
+                        cancellationToken);
+                }
             }
             finally
             {
@@ -416,12 +439,31 @@ public sealed class NovaLinkHostedService : BackgroundService
                     return;
                 }
 
-                queuedRequests.RemoveAll(
-                    item =>
-                        string.Equals(
-                            item.Id,
-                            id,
-                            StringComparison.Ordinal));
+                var removed =
+                    queuedRequests.RemoveAll(
+                        item =>
+                            string.Equals(
+                                item.Id,
+                                id,
+                                StringComparison.Ordinal));
+
+                if (
+                    removed > 0 &&
+                    socket.State ==
+                        WebSocketState.Open &&
+                    !cancellationToken
+                        .IsCancellationRequested)
+                {
+                    await SendControlAsync(
+                        socket,
+                        new
+                        {
+                            type =
+                                "cancelled",
+                            id
+                        },
+                        cancellationToken);
+                }
 
                 return;
             }
