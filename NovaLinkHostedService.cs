@@ -562,8 +562,8 @@ public sealed class NovaLinkHostedService : BackgroundService
                     request.Query is not null &&
                     request.Query.Any(
                         pair =>
-                            pair.Key.Length > 128 ||
-                            pair.Value.Length > 4096)
+                            (pair.Key?.Length ?? 0) > 128 ||
+                            (pair.Value?.Length ?? 0) > 4096)
                 ))
             {
                 await SendControlAsync(
