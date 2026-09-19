@@ -15,6 +15,12 @@ public sealed class NovaRequestDispatcher
     private readonly ClientMeshPackageService _clientMeshes;
     private readonly ILogger<NovaRequestDispatcher> _log;
 
+    // The backend intentionally performs only one memory-heavy CUE4Parse
+    // operation at a time. NovaLink is sequential already, but direct HTTP
+    // requests can otherwise overlap and exhaust small container memory.
+    private readonly SemaphoreSlim _heavyGate =
+        new(1, 1);
+
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
         {
@@ -58,48 +64,78 @@ public sealed class NovaRequestDispatcher
         {
             return (method, path) switch
             {
-                ("GET", "/health") or
+                ("GET", "/health") =>
+                    Json(
+                        200,
+                        BuildHealth(
+                            includeDetails: false)),
+
                 ("GET", "/v1/health") =>
                     Json(
                         200,
-                        BuildHealth()),
+                        BuildHealth(
+                            includeDetails: true)),
 
                 ("POST", "/v1/warmup") =>
-                    await WarmupAsync(
+                    await RunHeavyAsync(
+                        token =>
+                            WarmupAsync(
+                                token),
                         cancellationToken),
 
                 ("POST", "/v1/refresh") =>
-                    await RefreshAsync(
+                    await RunHeavyAsync(
+                        token =>
+                            RefreshAsync(
+                                token),
                         cancellationToken),
 
                 ("GET", "/v1/resolve") =>
-                    await ResolveAsync(
-                        GetAssetPath(query),
+                    await RunHeavyAsync(
+                        token =>
+                            ResolveAsync(
+                                GetAssetPath(query),
+                                token),
                         cancellationToken),
 
                 ("GET", "/v1/preview") =>
-                    await PreviewAsync(
-                        GetAssetPath(query),
+                    await RunHeavyAsync(
+                        token =>
+                            PreviewAsync(
+                                GetAssetPath(query),
+                                token),
                         cancellationToken),
 
                 ("GET", "/v1/client-mesh") =>
-                    await ClientMeshAsync(
-                        GetAssetPath(query),
+                    await RunHeavyAsync(
+                        token =>
+                            ClientMeshAsync(
+                                GetAssetPath(query),
+                                token),
                         cancellationToken),
 
                 ("GET", "/v1/inspect") =>
-                    await InspectAsync(
-                        GetAssetPath(query),
+                    await RunHeavyAsync(
+                        token =>
+                            InspectAsync(
+                                GetAssetPath(query),
+                                token),
                         cancellationToken),
 
                 ("GET", "/v1/references") =>
-                    await ReferencesAsync(
-                        GetAssetPath(query),
+                    await RunHeavyAsync(
+                        token =>
+                            ReferencesAsync(
+                                GetAssetPath(query),
+                                token),
                         cancellationToken),
 
                 ("GET", "/v1/texture") =>
-                    await TextureAsync(
-                        GetAssetPath(query),
+                    await RunHeavyAsync(
+                        token =>
+                            TextureAsync(
+                                GetAssetPath(query),
+                                token),
                         cancellationToken),
 
                 _ =>
@@ -165,7 +201,8 @@ public sealed class NovaRequestDispatcher
         }
     }
 
-    private object BuildHealth()
+    private object BuildHealth(
+        bool includeDetails)
     {
         var health =
             _provider.Health();
@@ -183,7 +220,13 @@ public sealed class NovaRequestDispatcher
             health.IndexedFiles,
             health.RequiredKeys,
             health.LoadedKeys,
-            health.LastError,
+            hasError =
+                !string.IsNullOrWhiteSpace(
+                    health.LastError),
+            lastError =
+                includeDetails
+                    ? health.LastError
+                    : null,
             health.TextureStreamingReady,
             providerPreviewCacheEntries =
                 health.PreviewCacheEntries,
@@ -218,7 +261,8 @@ public sealed class NovaRequestDispatcher
 
         return Json(
             200,
-            BuildHealth());
+            BuildHealth(
+                includeDetails: true));
     }
 
     private async Task<DispatchResponse> RefreshAsync(
@@ -237,7 +281,8 @@ public sealed class NovaRequestDispatcher
 
         return Json(
             200,
-            BuildHealth());
+            BuildHealth(
+                includeDetails: true));
     }
 
     private async Task<DispatchResponse> ResolveAsync(
@@ -512,6 +557,43 @@ public sealed class NovaRequestDispatcher
             value = value.TrimEnd('/');
 
         return value;
+    }
+
+    private async Task<DispatchResponse>
+        RunHeavyAsync(
+            Func<CancellationToken, Task<DispatchResponse>> operation,
+            CancellationToken cancellationToken)
+    {
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        if (
+            !await _heavyGate.WaitAsync(
+                0,
+                cancellationToken))
+        {
+            return Json(
+                503,
+                new
+                {
+                    state = "busy",
+                    error =
+                        "NovaSparx is busy with another asset request. Retry shortly."
+                });
+        }
+
+        try
+        {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
+            return await operation(
+                cancellationToken);
+        }
+        finally
+        {
+            _heavyGate.Release();
+        }
     }
 
     private static CancellationTokenSource CreateTimeout(
