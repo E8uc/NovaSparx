@@ -1,3 +1,4 @@
+using System.Net;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -288,6 +289,137 @@ public sealed partial class PublicFortniteSources
         {
             throw new InvalidOperationException(
                 "NovaSparx received an invalid or insecure HTTP URL.");
+        }
+
+        return uri.ToString();
+    }
+
+    private static bool IsPrivateNetworkHost(
+        string host)
+    {
+        host =
+            (host ?? string.Empty)
+                .Trim()
+                .TrimEnd('.');
+
+        if (
+            string.IsNullOrWhiteSpace(
+                host) ||
+            host.Equals(
+                "localhost",
+                StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(
+                ".localhost",
+                StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(
+                ".local",
+                StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(
+                ".internal",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!IPAddress.TryParse(
+                host,
+                out var address))
+        {
+            return false;
+        }
+
+        if (
+            address.IsIPv4MappedToIPv6)
+        {
+            address =
+                address.MapToIPv4();
+        }
+
+        if (
+            IPAddress.IsLoopback(
+                address))
+        {
+            return true;
+        }
+
+        var bytes =
+            address.GetAddressBytes();
+
+        if (
+            address.AddressFamily ==
+            System.Net.Sockets
+                .AddressFamily.InterNetwork)
+        {
+            return
+                bytes[0] == 0 ||
+                bytes[0] == 10 ||
+                bytes[0] == 127 ||
+                (
+                    bytes[0] == 169 &&
+                    bytes[1] == 254
+                ) ||
+                (
+                    bytes[0] == 172 &&
+                    bytes[1] >= 16 &&
+                    bytes[1] <= 31
+                ) ||
+                (
+                    bytes[0] == 192 &&
+                    bytes[1] == 168
+                ) ||
+                (
+                    bytes[0] == 100 &&
+                    bytes[1] >= 64 &&
+                    bytes[1] <= 127
+                ) ||
+                bytes[0] >= 224;
+        }
+
+        if (
+            address.AddressFamily ==
+            System.Net.Sockets
+                .AddressFamily.InterNetworkV6)
+        {
+            return
+                address.IsIPv6LinkLocal ||
+                address.IsIPv6SiteLocal ||
+                (
+                    bytes.Length > 0 &&
+                    (bytes[0] & 0xFE) ==
+                    0xFC
+                );
+        }
+
+        return true;
+    }
+
+    private static string RequirePublicHttpsEndpoint(
+        string raw)
+    {
+        var clean =
+            RequireHttpEndpoint(
+                raw);
+
+        var uri =
+            new Uri(
+                clean,
+                UriKind.Absolute);
+
+        if (
+            !uri.Scheme.Equals(
+                "https",
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.IsNullOrEmpty(
+                uri.UserInfo) ||
+            (
+                !uri.IsDefaultPort &&
+                uri.Port != 443
+            ) ||
+            IsPrivateNetworkHost(
+                uri.Host))
+        {
+            throw new InvalidOperationException(
+                "NovaSparx rejected an unsafe remote metadata URL.");
         }
 
         return uri.ToString();
@@ -738,7 +870,8 @@ public sealed partial class PublicFortniteSources
                 try
                 {
                     return await DownloadManifestFromAnyEndpoint(
-                        candidate.Url,
+                        RequirePublicHttpsEndpoint(
+                            candidate.Url),
                         cancellationToken,
                         visited,
                         depth + 1);
@@ -987,7 +1120,8 @@ public sealed partial class PublicFortniteSources
                 {
                     var provider =
                         await DownloadMappings(
-                            url,
+                            RequirePublicHttpsEndpoint(
+                                url),
                             cancellationToken);
 
                     if (provider is not null)
