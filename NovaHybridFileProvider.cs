@@ -339,18 +339,55 @@ public sealed class NovaHybridFileProvider : AbstractVfsFileProvider
         value =
             string.IsNullOrWhiteSpace(value)
                 ? "unknown"
-                : value;
+                : value.Trim();
 
-        foreach (var character in
-                 Path.GetInvalidFileNameChars())
+        // Keep cache paths platform-independent and impossible to escape with
+        // values such as "..", path separators, drive markers or very long
+        // remote manifest labels.
+        var builder =
+            new System.Text.StringBuilder(
+                Math.Min(
+                    value.Length,
+                    120));
+
+        foreach (
+            var character in
+            value)
         {
-            value =
-                value.Replace(
-                    character,
-                    '_');
+            if (
+                builder.Length >=
+                120)
+            {
+                break;
+            }
+
+            builder.Append(
+                char.IsLetterOrDigit(
+                    character) ||
+                character is
+                    '.' or
+                    '_' or
+                    '-'
+                    ? character
+                    : '_');
         }
 
-        return value;
+        var clean =
+            builder
+                .ToString()
+                .Trim(
+                    ' ',
+                    '.');
+
+        if (
+            string.IsNullOrWhiteSpace(
+                clean) ||
+            clean is "." or "..")
+        {
+            return "unknown";
+        }
+
+        return clean;
     }
 }
 
