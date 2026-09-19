@@ -31,6 +31,13 @@ public sealed class MeshResolverService
         DateTimeOffset CreatedAt,
         ResolveEnvelope Value);
 
+    private static readonly bool LowMemoryMode =
+        bool.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_LOW_MEMORY_MODE"),
+            out var lowMemoryMode) &&
+        lowMemoryMode;
+
     private static readonly TimeSpan CacheTtl =
         TimeSpan.FromMinutes(
             int.TryParse(
@@ -38,7 +45,35 @@ public sealed class MeshResolverService
                     "NOVASPARX_MESH_CACHE_MINUTES"),
                 out var minutes)
                 ? Math.Clamp(minutes, 1, 120)
-                : 20);
+                : LowMemoryMode
+                    ? 1
+                    : 10);
+
+    private static readonly int MaxCacheEntries =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_MESH_CACHE_MAX_ENTRIES"),
+            out var maxCacheEntries)
+            ? Math.Clamp(
+                maxCacheEntries,
+                0,
+                32)
+            : LowMemoryMode
+                ? 1
+                : 8;
+
+    private static readonly long MaxCacheBytes =
+        long.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_MESH_CACHE_MAX_BYTES"),
+            out var maxCacheBytes)
+            ? Math.Clamp(
+                maxCacheBytes,
+                0,
+                256L * 1024 * 1024)
+            : LowMemoryMode
+                ? 20L * 1024 * 1024
+                : 128L * 1024 * 1024;
 
     private static readonly int MaxVertices =
         int.TryParse(
@@ -191,12 +226,24 @@ public sealed class MeshResolverService
             cancellationToken
                 .ThrowIfCancellationRequested();
 
-            TrimCacheIfNeeded();
-
-            _cache[canonical] =
-                new CacheEntry(
-                    DateTimeOffset.UtcNow,
+            var cacheBytes =
+                EstimateEnvelopeBytes(
                     envelope);
+
+            TrimCacheIfNeeded(
+                cacheBytes);
+
+            if (
+                MaxCacheEntries > 0 &&
+                MaxCacheBytes > 0 &&
+                cacheBytes <=
+                    MaxCacheBytes)
+            {
+                _cache[canonical] =
+                    new CacheEntry(
+                        DateTimeOffset.UtcNow,
+                        envelope);
+            }
 
             return envelope;
         }
@@ -1091,26 +1138,88 @@ public sealed class MeshResolverService
         };
     }
 
-    private void TrimCacheIfNeeded()
+    private static long EstimateEnvelopeBytes(
+        ResolveEnvelope envelope)
     {
-        if (_cache.Count <= 240)
-            return;
+        var geometry =
+            envelope.Manifest.Geometry;
 
-        var oldest =
-            _cache
-                .OrderBy(
-                    pair =>
-                        pair.Value.CreatedAt)
-                .Take(60)
-                .Select(
-                    pair =>
-                        pair.Key)
-                .ToArray();
+        return
+            (long)geometry.Positions.Length *
+                sizeof(float) +
+            (long)geometry.Normals.Length *
+                sizeof(float) +
+            (long)geometry.Tangents.Length *
+                sizeof(float) +
+            (long)geometry.Uv0.Length *
+                sizeof(float) +
+            (long)(geometry.Colors?.Length ?? 0) *
+                sizeof(float) +
+            (long)geometry.Indices.Length *
+                sizeof(uint);
+    }
 
-        foreach (var key in oldest)
+    private void TrimCacheIfNeeded(
+        long incomingBytes)
+    {
+        if (
+            MaxCacheEntries <= 0 ||
+            MaxCacheBytes <= 0)
         {
+            _cache.Clear();
+            return;
+        }
+
+        var now =
+            DateTimeOffset.UtcNow;
+
+        foreach (
+            var pair in
+            _cache.ToArray())
+        {
+            if (
+                now -
+                pair.Value.CreatedAt >=
+                CacheTtl)
+            {
+                _cache.TryRemove(
+                    pair.Key,
+                    out _);
+            }
+        }
+
+        long CurrentBytes() =>
+            _cache.Sum(
+                pair =>
+                    EstimateEnvelopeBytes(
+                        pair.Value.Value));
+
+        while (
+            _cache.Count >=
+                MaxCacheEntries ||
+            CurrentBytes() +
+                incomingBytes >
+                MaxCacheBytes)
+        {
+            var oldest =
+                _cache
+                    .OrderBy(
+                        pair =>
+                            pair.Value.CreatedAt)
+                    .Select(
+                        pair =>
+                            pair.Key)
+                    .FirstOrDefault();
+
+            if (
+                string.IsNullOrEmpty(
+                    oldest))
+            {
+                break;
+            }
+
             _cache.TryRemove(
-                key,
+                oldest,
                 out _);
         }
     }
