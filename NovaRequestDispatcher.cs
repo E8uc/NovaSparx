@@ -207,6 +207,21 @@ public sealed class NovaRequestDispatcher
         var health =
             _provider.Health();
 
+        if (!includeDetails)
+        {
+            return new
+            {
+                health.Ok,
+                health.Service,
+                health.Version,
+                health.ProviderReady,
+                clientRendered3d =
+                    true,
+                clientMeshBinary =
+                    ClientMeshPackageService.Schema
+            };
+        }
+
         return new
         {
             health.Ok,
@@ -224,9 +239,7 @@ public sealed class NovaRequestDispatcher
                 !string.IsNullOrWhiteSpace(
                     health.LastError),
             lastError =
-                includeDetails
-                    ? health.LastError
-                    : null,
+                health.LastError,
             health.TextureStreamingReady,
             providerPreviewCacheEntries =
                 health.PreviewCacheEntries,
@@ -234,17 +247,24 @@ public sealed class NovaRequestDispatcher
                 _meshes.CacheEntries,
             textureCacheEntries =
                 _textures.CacheEntries,
-            universalMeshPreview = true,
-            universalPreviewPlan = true,
-            clientRendered3d = true,
+            universalMeshPreview =
+                true,
+            universalPreviewPlan =
+                true,
+            clientRendered3d =
+                true,
             clientMeshBinary =
                 ClientMeshPackageService.Schema,
-            typeSafePreviewRouting = true,
+            typeSafePreviewRouting =
+                true,
             assetRegistryReferencerIndex =
                 "offline-sharded-v1",
-            staticMesh = true,
-            skeletalMesh = true,
-            inspector = "universal-uobject-metadata-v1"
+            staticMesh =
+                true,
+            skeletalMesh =
+                true,
+            inspector =
+                "universal-uobject-metadata-v1"
         };
     }
 
