@@ -28,7 +28,7 @@ namespace NovaSparx.Backend;
 /// </summary>
 public sealed class LiveProviderService : IDisposable
 {
-    public const string BackendVersion = "1.1.9";
+    public const string BackendVersion = "1.1.10";
 
     private readonly PublicFortniteSources _sources;
     private readonly ILogger<LiveProviderService> _log;
@@ -69,7 +69,7 @@ public sealed class LiveProviderService : IDisposable
     private static readonly bool LowMemoryMode =
         ReadBoolEnvironment(
             "NOVASPARX_LOW_MEMORY_MODE",
-            fallback: false);
+            fallback: true);
 
     private static readonly int PreviewCacheMaxEntries =
         int.TryParse(
