@@ -54,7 +54,13 @@ export class NovaSparxViewer {
     this.distance = 2.8;
     this.pointer = null;
     this.frame = 0;
-    this.textureCache = new Map();
+    this.textureCache =
+      new Map();
+
+    this.maxTextureCacheEntries =
+      guardState.isMobile
+        ? 12
+        : 32;
 
     this.contextLost =
       () => {
@@ -144,10 +150,101 @@ export class NovaSparxViewer {
     if (geometry.colors) g.setAttribute('color', new THREE.BufferAttribute(geometry.colors, 4));
     g.setIndex(new THREE.BufferAttribute(geometry.indices, 1));
 
-    const materials = await Promise.all((header.materials || []).map(m => this.#material(m)));
-    if (!materials.length) materials.push(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.62 }));
-    for (const section of header.sections || [])
-      g.addGroup(section.firstIndex, section.indexCount, Math.max(0, section.materialIndex || 0));
+    const materialSources =
+      Array.isArray(
+        header.materials
+      )
+        ? header.materials
+            .slice(
+              0,
+              64
+            )
+        : [];
+
+    const materials =
+      await Promise.all(
+        materialSources.map(
+          m =>
+            this.#material(m)
+        )
+      );
+
+    if (!materials.length) {
+      materials.push(
+        new THREE.MeshStandardMaterial({
+          color:
+            0xffffff,
+          roughness:
+            0.62
+        })
+      );
+    }
+
+    const sections =
+      Array.isArray(
+        header.sections
+      )
+        ? header.sections
+            .slice(
+              0,
+              256
+            )
+        : [];
+
+    for (
+      const section of
+      sections
+    ) {
+      const firstIndex =
+        Math.max(
+          0,
+          Math.min(
+            geometry.indices.length,
+            Number(
+              section?.firstIndex ||
+              0
+            ) || 0
+          )
+        );
+
+      let indexCount =
+        Math.max(
+          0,
+          Math.min(
+            geometry.indices.length -
+              firstIndex,
+            Number(
+              section?.indexCount ||
+              0
+            ) || 0
+          )
+        );
+
+      indexCount -=
+        indexCount % 3;
+
+      if (!indexCount) {
+        continue;
+      }
+
+      const materialIndex =
+        Math.max(
+          0,
+          Math.min(
+            materials.length - 1,
+            Number(
+              section?.materialIndex ||
+              0
+            ) || 0
+          )
+        );
+
+      g.addGroup(
+        firstIndex,
+        indexCount,
+        materialIndex
+      );
+    }
 
     const mesh = new THREE.Mesh(g, materials);
     const center = header.bounds?.center || [0, 0, 0];
@@ -206,26 +303,149 @@ export class NovaSparxViewer {
     return material;
   }
 
-  async #texture(path, colorSpace) {
-    const cached = this.textureCache.get(path);
-    if (cached) return cached;
-    if (!this.options.textureUrlForPath || !this.options.fetch) return null;
+  async #texture(
+    path,
+    colorSpace
+  ) {
+    const cached =
+      this.textureCache.get(
+        path
+      );
+
+    if (cached) {
+      this.textureCache.delete(
+        path
+      );
+
+      this.textureCache.set(
+        path,
+        cached
+      );
+
+      return cached;
+    }
+
+    if (
+      !this.options
+        .textureUrlForPath ||
+      !this.options.fetch
+    ) {
+      return null;
+    }
+
+    let bitmap =
+      null;
 
     try {
-      const url = await this.options.textureUrlForPath(path);
-      if (!url) return null;
-      const response = await this.options.fetch(url, this.options.fetchOptions);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const bitmap = await createImageBitmap(await response.blob());
-      const texture = new THREE.CanvasTexture(bitmap);
-      texture.colorSpace = colorSpace;
-      texture.flipY = false;
-      texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-      texture.needsUpdate = true;
-      this.textureCache.set(path, texture);
+      const url =
+        await this.options
+          .textureUrlForPath(
+            path
+          );
+
+      if (!url) {
+        return null;
+      }
+
+      const response =
+        await this.options
+          .fetch(
+            url,
+            this.options
+              .fetchOptions
+          );
+
+      this.guard
+        ?.assertResponseBudget?.(
+          response,
+          "texture"
+        );
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+      }
+
+      const blob =
+        await response.blob();
+
+      bitmap =
+        await createImageBitmap(
+          blob
+        );
+
+      const texture =
+        new THREE.CanvasTexture(
+          bitmap
+        );
+
+      texture.colorSpace =
+        colorSpace;
+
+      texture.flipY =
+        false;
+
+      texture.wrapS =
+        texture.wrapT =
+          THREE.RepeatWrapping;
+
+      texture.needsUpdate =
+        true;
+
+      const image =
+        bitmap;
+
+      texture.addEventListener(
+        "dispose",
+        () => {
+          try {
+            image?.close?.();
+          } catch {}
+        }
+      );
+
+      bitmap =
+        null;
+
+      this.textureCache.set(
+        path,
+        texture
+      );
+
+      while (
+        this.textureCache.size >
+        this.maxTextureCacheEntries
+      ) {
+        const oldestKey =
+          this.textureCache
+            .keys()
+            .next()
+            .value;
+
+        const oldest =
+          this.textureCache.get(
+            oldestKey
+          );
+
+        this.textureCache.delete(
+          oldestKey
+        );
+
+        oldest?.dispose?.();
+      }
+
       return texture;
     } catch (error) {
-      this.options.onWarning(`Texture could not be loaded: ${path}`, error);
+      try {
+        bitmap?.close?.();
+      } catch {}
+
+      this.options.onWarning(
+        `Texture could not be loaded: ${path}`,
+        error
+      );
+
       return null;
     }
   }
@@ -309,6 +529,12 @@ export class NovaSparxViewer {
     this.textureCache.clear();
     this.renderer.dispose();
     this.renderer.forceContextLoss?.();
+
+    this.canvas.width =
+      1;
+
+    this.canvas.height =
+      1;
 
     this.canvas.removeEventListener(
       "webglcontextlost",
