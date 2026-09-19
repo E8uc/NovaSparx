@@ -126,6 +126,16 @@ public sealed class NovaRequestDispatcher
                 });
         }
         catch (OperationCanceledException)
+            when (
+                cancellationToken
+                    .IsCancellationRequested)
+        {
+            // A newer browser request replaced this one. Propagate the
+            // cancellation all the way back to NovaLink so the cancelled
+            // request cannot continue producing a late response.
+            throw;
+        }
+        catch (OperationCanceledException)
         {
             return Json(
                 504,
