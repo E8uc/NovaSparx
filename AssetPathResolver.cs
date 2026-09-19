@@ -17,6 +17,38 @@ namespace NovaSparx.Backend;
 /// </summary>
 public static partial class AssetPathResolver
 {
+    private const int MaxAssetPathLength =
+        2048;
+
+    private static bool UnsafeInput(
+        string value)
+    {
+        if (
+            value.Length >
+            MaxAssetPathLength)
+        {
+            return true;
+        }
+
+        foreach (var ch in value)
+        {
+            if (
+                ch == '\0' ||
+                char.IsControl(ch))
+            {
+                return true;
+            }
+        }
+
+        return value
+            .Split(
+                '/',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries)
+            .Any(
+                segment =>
+                    segment is "." or "..");
+    }
     [GeneratedRegex(
         @"^(?:StaticMesh|SkeletalMesh|Texture2D|Texture|Material|MaterialInstanceConstant|MaterialInstance|Object|BlueprintGeneratedClass|Blueprint|WidgetBlueprint|AnimBlueprint|NiagaraSystem|NiagaraEmitter|SoundCue|SoundWave|World|LevelSequence)?'(.+)'$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -28,8 +60,12 @@ public static partial class AssetPathResolver
             .Trim()
             .Replace('\\', '/');
 
-        if (value.Length == 0)
+        if (
+            value.Length == 0 ||
+            UnsafeInput(value))
+        {
             return string.Empty;
+        }
 
         var wrapper = ClassWrapper().Match(value);
         if (wrapper.Success)
@@ -165,6 +201,13 @@ public static partial class AssetPathResolver
                 .Trim()
                 .Trim('\'', '"')
                 .Replace('\\', '/');
+
+            if (
+                UnsafeInput(
+                    candidate))
+            {
+                return;
+            }
 
             if (seen.Add(candidate))
                 result.Add(candidate);
