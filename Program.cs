@@ -63,6 +63,9 @@ builder.WebHost
     .ConfigureKestrel(
         options =>
         {
+            options.AddServerHeader =
+                false;
+
             options.Limits
                     .MaxRequestBodySize =
                 64 * 1024;
@@ -267,6 +270,19 @@ static async Task DispatchHttpAsync(
     context.Response.Headers[
         "X-Content-Type-Options"] =
         "nosniff";
+
+    context.Response.Headers[
+        "Referrer-Policy"] =
+        "no-referrer";
+
+    if (
+        response.Status ==
+        StatusCodes.Status503ServiceUnavailable)
+    {
+        context.Response.Headers[
+            "Retry-After"] =
+            "1";
+    }
 
     if (response.Status == 200 &&
         response.ContentType.StartsWith(
