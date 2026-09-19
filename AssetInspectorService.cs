@@ -205,6 +205,13 @@ public sealed class AssetInspectorService
                         envelope.Schema;
                 }
             }
+            catch (OperationCanceledException)
+                when (
+                    cancellationToken
+                        .IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 // Inspection should remain useful even if a huge or malformed
@@ -213,7 +220,7 @@ public sealed class AssetInspectorService
                     false;
 
                 facts["previewError"] =
-                    ex.Message;
+                    "Mesh preview is unavailable for this asset.";
 
                 _log.LogDebug(
                     ex,
