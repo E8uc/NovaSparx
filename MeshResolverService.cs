@@ -32,10 +32,10 @@ public sealed class MeshResolverService
         ResolveEnvelope Value);
 
     private static readonly bool LowMemoryMode =
-        bool.TryParse(
+        !bool.TryParse(
             Environment.GetEnvironmentVariable(
                 "NOVASPARX_LOW_MEMORY_MODE"),
-            out var lowMemoryMode) &&
+            out var lowMemoryMode) ||
         lowMemoryMode;
 
     private static readonly TimeSpan CacheTtl =
@@ -72,7 +72,7 @@ public sealed class MeshResolverService
                 0,
                 256L * 1024 * 1024)
             : LowMemoryMode
-                ? 20L * 1024 * 1024
+                ? 16L * 1024 * 1024
                 : 128L * 1024 * 1024;
 
     private static readonly int MaxVertices =
@@ -84,7 +84,9 @@ public sealed class MeshResolverService
                 parsedVertices,
                 10_000,
                 700_000)
-            : 320_000;
+            : LowMemoryMode
+                ? 160_000
+                : 320_000;
 
     private static readonly int MaxIndices =
         int.TryParse(
@@ -95,7 +97,9 @@ public sealed class MeshResolverService
                 parsedIndices,
                 30_000,
                 2_100_000)
-            : 960_000;
+            : LowMemoryMode
+                ? 480_000
+                : 960_000;
 
     public MeshResolverService(
         LiveProviderService provider,
