@@ -1,5 +1,17 @@
 const MAGIC = [0x4e, 0x53, 0x4d, 0x45, 0x53, 0x48, 0x31, 0x00];
 
+const MAX_HEADER_BYTES =
+  512 * 1024;
+
+const MAX_PACKAGE_BYTES =
+  64 * 1024 * 1024;
+
+const MAX_VERTICES =
+  700_000;
+
+const MAX_INDICES =
+  2_100_000;
+
 export function recommendedRenderQuality(environment = globalThis) {
   const nav = environment?.navigator ?? {};
   const memory = Number(nav.deviceMemory || 0);
@@ -23,7 +35,16 @@ export function parseNovaMesh(input) {
     : ArrayBuffer.isView(input)
       ? { buffer: input.buffer, byteOffset: input.byteOffset, byteLength: input.byteLength }
       : null;
-  if (!source || source.byteLength < 16) throw new Error('Invalid NovaSparx mesh package.');
+  if (
+    !source ||
+    source.byteLength < 16 ||
+    source.byteLength >
+      MAX_PACKAGE_BYTES
+  ) {
+    throw new Error(
+      'Invalid or oversized NovaSparx mesh package.'
+    );
+  }
 
   const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
   for (let i = 0; i < MAGIC.length; i += 1)
@@ -32,8 +53,18 @@ export function parseNovaMesh(input) {
   const view = new DataView(source.buffer, source.byteOffset, source.byteLength);
   const headerLength = view.getUint32(8, true);
   const paddedHeaderLength = view.getUint32(12, true);
-  if (!headerLength || paddedHeaderLength < headerLength || paddedHeaderLength % 4)
-    throw new Error('NovaSparx mesh package has an invalid header.');
+  if (
+    !headerLength ||
+    headerLength >
+      MAX_HEADER_BYTES ||
+    paddedHeaderLength <
+      headerLength ||
+    paddedHeaderLength % 4
+  ) {
+    throw new Error(
+      'NovaSparx mesh package has an invalid header.'
+    );
+  }
 
   const payloadStart = 16 + paddedHeaderLength;
   if (payloadStart > source.byteLength) throw new Error('NovaSparx mesh header exceeds the package.');
@@ -71,10 +102,53 @@ export function parseNovaMesh(input) {
     throw new Error('NovaSparx mesh package is missing geometry streams.');
 
   const vertices = geometry.positions.length / 3;
-  if (!Number.isInteger(vertices) || vertices <= 0 ||
-      geometry.normals.length !== vertices * 3 || geometry.tangents.length !== vertices * 4 ||
-      geometry.uv0.length !== vertices * 2 || (geometry.colors && geometry.colors.length !== vertices * 4))
-    throw new Error('NovaSparx mesh package has inconsistent geometry streams.');
+  if (
+    !Number.isInteger(vertices) ||
+    vertices <= 0 ||
+    vertices >
+      MAX_VERTICES ||
+    geometry.indices.length < 3 ||
+    geometry.indices.length >
+      MAX_INDICES ||
+    geometry.indices.length % 3 !== 0 ||
+    geometry.normals.length !== vertices * 3 ||
+    geometry.tangents.length !== vertices * 4 ||
+    geometry.uv0.length !== vertices * 2 ||
+    (
+      geometry.colors &&
+      geometry.colors.length !==
+        vertices * 4
+    )
+  ) {
+    throw new Error(
+      'NovaSparx mesh package has inconsistent geometry streams.'
+    );
+  }
 
-  return { header, geometry, buffer: source.buffer };
+  for (
+    let index = 0;
+    index <
+      geometry.indices.length;
+    index++
+  ) {
+    if (
+      geometry.indices[index] >=
+      vertices
+    ) {
+      throw new Error(
+        'NovaSparx mesh package contains an out-of-range index.'
+      );
+    }
+  }
+
+  return {
+    header,
+    geometry,
+    buffer:
+      source.buffer,
+    byteOffset:
+      source.byteOffset,
+    byteLength:
+      source.byteLength
+  };
 }
