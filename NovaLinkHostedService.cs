@@ -92,6 +92,18 @@ public sealed class NovaLinkHostedService : BackgroundService
             return;
         }
 
+        if (
+            linkUri.Scheme.Equals(
+                "ws",
+                StringComparison.OrdinalIgnoreCase) &&
+            !linkUri.IsLoopback)
+        {
+            _log.LogError(
+                "NovaLink disabled: remote connections must use wss:// so shared tokens are never sent over plaintext WebSocket.");
+
+            return;
+        }
+
         var tokens =
             ReadLinkTokens();
 
@@ -215,8 +227,12 @@ public sealed class NovaLinkHostedService : BackgroundService
                     name)?
                     .Trim();
 
-            if (string.IsNullOrWhiteSpace(
-                    token))
+            if (
+                string.IsNullOrWhiteSpace(
+                    token) ||
+                Encoding.UTF8
+                    .GetByteCount(token) >
+                    4096)
             {
                 continue;
             }
