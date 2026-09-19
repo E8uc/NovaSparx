@@ -86,6 +86,19 @@ public sealed class TextureService
                 32 * 1024 * 1024)
             : 12 * 1024 * 1024;
 
+    private static readonly long MaxDecodedPixels =
+        long.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_TEXTURE_MAX_PIXELS"),
+            out var maxPixels)
+            ? Math.Clamp(
+                maxPixels,
+                64L * 64,
+                4096L * 4096)
+            : LowMemoryMode
+                ? 1024L * 1024
+                : 4096L * 4096;
+
     public TextureService(
         LiveProviderService provider,
         ILogger<TextureService> log)
@@ -169,7 +182,9 @@ public sealed class TextureService
                         MaxMipSize,
                         ETexturePlatform.DesktopMobile);
 
-                if (decoded is null)
+                if (
+                    decoded is null &&
+                    !LowMemoryMode)
                 {
                     decoded =
                         texture.Decode(
@@ -181,6 +196,22 @@ public sealed class TextureService
 
                 cancellationToken
                     .ThrowIfCancellationRequested();
+
+                var decodedPixels =
+                    (long)decoded.Width *
+                    decoded.Height;
+
+                if (
+                    decoded.Width <= 0 ||
+                    decoded.Height <= 0 ||
+                    decodedPixels <= 0 ||
+                    decodedPixels >
+                        MaxDecodedPixels)
+                {
+                    throw new InvalidOperationException(
+                        "Decoded texture exceeds the NovaSparx pixel budget " +
+                        $"({decoded.Width}x{decoded.Height} > {MaxDecodedPixels:N0} pixels).");
+                }
 
                 var png =
                     decoded.Encode(
