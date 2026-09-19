@@ -172,19 +172,24 @@ public sealed class MeshResolverService
                         BuildStaticMeshEnvelope(
                             staticMesh,
                             canonical,
-                            resolvedPath),
+                            resolvedPath,
+                            cancellationToken),
 
                     USkeletalMesh skeletalMesh =>
                         BuildSkeletalMeshEnvelope(
                             skeletalMesh,
                             canonical,
-                            resolvedPath),
+                            resolvedPath,
+                            cancellationToken),
 
                     _ => null
                 };
 
             if (envelope is null)
                 return null;
+
+            cancellationToken
+                .ThrowIfCancellationRequested();
 
             TrimCacheIfNeeded();
 
@@ -232,8 +237,12 @@ public sealed class MeshResolverService
         BuildStaticMeshEnvelope(
             UStaticMesh mesh,
             string canonical,
-            string resolved)
+            string resolved,
+            CancellationToken cancellationToken)
     {
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
         if (!mesh.TryConvert(
                 out CStaticMesh converted,
                 ENaniteMeshFormat.AllLayersNaniteLast))
@@ -244,6 +253,9 @@ public sealed class MeshResolverService
 
         using (converted)
         {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
             var candidates =
                 new List<(
                     CStaticMeshLod Lod,
@@ -255,6 +267,9 @@ public sealed class MeshResolverService
                  index < converted.LODs.Count;
                  index++)
             {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 var lod =
                     converted.LODs[index];
 
@@ -305,7 +320,8 @@ public sealed class MeshResolverService
 
             var geometry =
                 BuildGeometry(
-                    chosen);
+                    chosen,
+                    cancellationToken);
 
             var rawSections =
                 chosen.Sections?.Value ??
@@ -315,7 +331,8 @@ public sealed class MeshResolverService
                 BuildMaterials(
                     rawSections,
                     chosen.IsTwoSided,
-                    out var references);
+                    out var references,
+                    cancellationToken);
 
             var sections =
                 BuildSections(
@@ -350,14 +367,21 @@ public sealed class MeshResolverService
         BuildSkeletalMeshEnvelope(
             USkeletalMesh mesh,
             string canonical,
-            string resolved)
+            string resolved,
+            CancellationToken cancellationToken)
     {
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
         if (!mesh.TryConvert(
                 out CSkeletalMesh converted))
         {
             throw new InvalidOperationException(
                 "CUE4Parse could not convert this SkeletalMesh.");
         }
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
 
         if (converted.LODs.Count == 0)
         {
@@ -376,6 +400,9 @@ public sealed class MeshResolverService
              index < converted.LODs.Count;
              index++)
         {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
             var lod =
                 converted.LODs[index];
 
@@ -426,7 +453,8 @@ public sealed class MeshResolverService
 
         var geometry =
             BuildGeometry(
-                chosen);
+                chosen,
+                cancellationToken);
 
         var rawSections =
             chosen.Sections?.Value ??
@@ -436,7 +464,8 @@ public sealed class MeshResolverService
             BuildMaterials(
                 rawSections,
                 fallbackTwoSided: false,
-                out var references);
+                out var references,
+                cancellationToken);
 
         var sections =
             BuildSections(
@@ -557,7 +586,8 @@ public sealed class MeshResolverService
     }
 
     private static PreviewGeometry BuildGeometry(
-        CStaticMeshLod chosen)
+        CStaticMeshLod chosen,
+        CancellationToken cancellationToken)
     {
         var vertices =
             chosen.Verts!;
@@ -588,6 +618,12 @@ public sealed class MeshResolverService
              index < vertexCount;
              index++)
         {
+            if ((index & 4095) == 0)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+            }
+
             var vertex =
                 vertices[index];
 
@@ -642,6 +678,12 @@ public sealed class MeshResolverService
                  index < vertexCount;
                  index++)
             {
+                if ((index & 4095) == 0)
+                {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+                }
+
                 var color =
                     vertexColors[index];
 
@@ -666,7 +708,8 @@ public sealed class MeshResolverService
     }
 
     private static PreviewGeometry BuildGeometry(
-        CSkelMeshLod chosen)
+        CSkelMeshLod chosen,
+        CancellationToken cancellationToken)
     {
         var vertices =
             chosen.Verts!;
@@ -697,6 +740,12 @@ public sealed class MeshResolverService
              index < vertexCount;
              index++)
         {
+            if ((index & 4095) == 0)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+            }
+
             var vertex =
                 vertices[index];
 
@@ -751,6 +800,12 @@ public sealed class MeshResolverService
                  index < vertexCount;
                  index++)
             {
+                if ((index & 4095) == 0)
+                {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+                }
+
                 var color =
                     vertexColors[index];
 
@@ -777,7 +832,8 @@ public sealed class MeshResolverService
     private PreviewMaterial[] BuildMaterials(
         CMeshSection[] rawSections,
         bool fallbackTwoSided,
-        out AssetReference[] references)
+        out AssetReference[] references,
+        CancellationToken cancellationToken)
     {
         var validMaterialIndices =
             rawSections
@@ -812,6 +868,9 @@ public sealed class MeshResolverService
         {
             foreach (var reference in source)
             {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 var key =
                     $"{reference.Kind}|{reference.Path}";
 
@@ -824,6 +883,9 @@ public sealed class MeshResolverService
              materialIndex < materialCount;
              materialIndex++)
         {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
             var section =
                 rawSections.FirstOrDefault(
                     candidate =>
