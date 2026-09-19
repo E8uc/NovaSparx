@@ -1,0 +1,46 @@
+name: CUE4Parse browser probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/CUE4Parse.BrowserProbe/**"
+      - ".github/workflows/cue4parse-browser-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install browser WASM workload
+        run: dotnet workload install wasm-tools
+
+      - name: Restore browser probe
+        run: dotnet restore tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj
+
+      - name: Publish CUE4Parse browser probe
+        run: dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release --no-restore
+
+      - name: Verify browser bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$(find tools/CUE4Parse.BrowserProbe/bin/Release -type d -name AppBundle -print -quit)"
+          test -n "$bundle"
+          test -f "$bundle/_framework/dotnet.js"
+          test -f "$bundle/main.js"
+          echo "CUE4Parse browser-WASM publish succeeded: $bundle"
