@@ -19,6 +19,7 @@ namespace NovaSparx.Backend;
 ///   Worker -> Nova:
 ///     {"type":"request","id":"...","method":"GET",
 ///      "path":"/v1/resolve","query":{"path":"/Game/..."}}
+///     {"type":"cancel","id":"...","reason":"client-request-aborted"}
 ///
 ///   Nova -> Worker:
 ///     {"type":"response","id":"...","status":200,
@@ -44,6 +45,9 @@ public sealed class NovaLinkHostedService : BackgroundService
 
     private readonly NovaRequestDispatcher _dispatcher;
     private readonly ILogger<NovaLinkHostedService> _log;
+
+    private readonly SemaphoreSlim _sendGate =
+        new(1, 1);
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
@@ -245,26 +249,96 @@ public sealed class NovaLinkHostedService : BackgroundService
         ClientWebSocket socket,
         CancellationToken cancellationToken)
     {
-        while (
-            socket.State == WebSocketState.Open &&
-            !cancellationToken.IsCancellationRequested)
+        var queuedRequests =
+            new List<LinkRequest>();
+
+        CancellationTokenSource?
+            activeRequestCancellation =
+                null;
+
+        Task? activeRequestTask =
+            null;
+
+        string? activeRequestId =
+            null;
+
+        var receiveTask =
+            ReceiveTextMessageAsync(
+                socket,
+                cancellationToken);
+
+        void StartRequest(
+            LinkRequest request)
         {
-            var text =
-                await ReceiveTextMessageAsync(
+            activeRequestCancellation =
+                CancellationTokenSource
+                    .CreateLinkedTokenSource(
+                        cancellationToken);
+
+            activeRequestId =
+                request.Id;
+
+            activeRequestTask =
+                HandleRequestAsync(
                     socket,
-                    cancellationToken);
+                    request,
+                    activeRequestCancellation
+                        .Token);
+        }
 
-            if (text is null)
-                break;
+        async Task ObserveActiveRequestAsync()
+        {
+            if (activeRequestTask is null)
+                return;
 
+            var task =
+                activeRequestTask;
+
+            var requestCancellation =
+                activeRequestCancellation;
+
+            try
+            {
+                await task;
+            }
+            catch (OperationCanceledException)
+                when (
+                    requestCancellation
+                        ?.IsCancellationRequested ==
+                    true)
+            {
+                _log.LogDebug(
+                    "NovaLink request {RequestId} cancelled.",
+                    activeRequestId);
+            }
+            finally
+            {
+                requestCancellation
+                    ?.Dispose();
+
+                activeRequestCancellation =
+                    null;
+
+                activeRequestTask =
+                    null;
+
+                activeRequestId =
+                    null;
+            }
+        }
+
+        async Task ProcessControlAsync(
+            string text)
+        {
             LinkRequest? request;
 
             try
             {
                 request =
-                    JsonSerializer.Deserialize<LinkRequest>(
-                        text,
-                        JsonOptions);
+                    JsonSerializer
+                        .Deserialize<LinkRequest>(
+                            text,
+                            JsonOptions);
             }
             catch (JsonException ex)
             {
@@ -276,16 +350,18 @@ public sealed class NovaLinkHostedService : BackgroundService
                     socket,
                     new
                     {
-                        type = "protocol_error",
-                        error = "Invalid JSON control message."
+                        type =
+                            "protocol_error",
+                        error =
+                            "Invalid JSON control message."
                     },
                     cancellationToken);
 
-                continue;
+                return;
             }
 
             if (request is null)
-                continue;
+                return;
 
             var type =
                 request.Type?
@@ -293,11 +369,7 @@ public sealed class NovaLinkHostedService : BackgroundService
                     .ToLowerInvariant();
 
             if (type == "hello")
-            {
-                // AutoLink sends one negotiated hello immediately after the
-                // WebSocket upgrade. It is informational, not an RPC request.
-                continue;
-            }
+                return;
 
             if (type == "ping")
             {
@@ -311,7 +383,47 @@ public sealed class NovaLinkHostedService : BackgroundService
                     },
                     cancellationToken);
 
-                continue;
+                return;
+            }
+
+            if (type == "cancel")
+            {
+                var id =
+                    request.Id?
+                        .Trim();
+
+                if (string.IsNullOrWhiteSpace(
+                        id))
+                {
+                    return;
+                }
+
+                if (string.Equals(
+                        activeRequestId,
+                        id,
+                        StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        activeRequestCancellation
+                            ?.Cancel();
+                    }
+                    catch
+                    {
+                        // It may have completed in the same instant.
+                    }
+
+                    return;
+                }
+
+                queuedRequests.RemoveAll(
+                    item =>
+                        string.Equals(
+                            item.Id,
+                            id,
+                            StringComparison.Ordinal));
+
+                return;
             }
 
             if (type != "request")
@@ -320,13 +432,14 @@ public sealed class NovaLinkHostedService : BackgroundService
                     socket,
                     new
                     {
-                        type = "protocol_error",
+                        type =
+                            "protocol_error",
                         error =
                             "Unsupported NovaLink control message."
                     },
                     cancellationToken);
 
-                continue;
+                return;
             }
 
             if (string.IsNullOrWhiteSpace(
@@ -336,19 +449,141 @@ public sealed class NovaLinkHostedService : BackgroundService
                     socket,
                     new
                     {
-                        type = "protocol_error",
+                        type =
+                            "protocol_error",
                         error =
                             "Request id is required."
                     },
                     cancellationToken);
 
-                continue;
+                return;
             }
 
-            await HandleRequestAsync(
-                socket,
-                request,
-                cancellationToken);
+            if (activeRequestTask is null)
+            {
+                StartRequest(
+                    request);
+
+                return;
+            }
+
+            // Responses stay sequential so binary chunks remain unambiguous,
+            // while the receive loop stays alive for cancel controls.
+            queuedRequests.Add(
+                request);
+        }
+
+        try
+        {
+            while (
+                socket.State ==
+                    WebSocketState.Open &&
+                !cancellationToken
+                    .IsCancellationRequested)
+            {
+                // Process a control frame that is already waiting before
+                // starting queued work. A queued cancellation therefore wins
+                // before any heavy parser work starts.
+                if (
+                    activeRequestTask is null &&
+                    receiveTask.IsCompleted)
+                {
+                    var text =
+                        await receiveTask;
+
+                    if (text is null)
+                        break;
+
+                    receiveTask =
+                        ReceiveTextMessageAsync(
+                            socket,
+                            cancellationToken);
+
+                    await ProcessControlAsync(
+                        text);
+
+                    continue;
+                }
+
+                if (
+                    activeRequestTask is null &&
+                    queuedRequests.Count > 0)
+                {
+                    var next =
+                        queuedRequests[0];
+
+                    queuedRequests.RemoveAt(
+                        0);
+
+                    StartRequest(
+                        next);
+
+                    continue;
+                }
+
+                if (activeRequestTask is null)
+                {
+                    var text =
+                        await receiveTask;
+
+                    if (text is null)
+                        break;
+
+                    receiveTask =
+                        ReceiveTextMessageAsync(
+                            socket,
+                            cancellationToken);
+
+                    await ProcessControlAsync(
+                        text);
+
+                    continue;
+                }
+
+                var completed =
+                    await Task.WhenAny(
+                        receiveTask,
+                        activeRequestTask);
+
+                if (
+                    ReferenceEquals(
+                        completed,
+                        activeRequestTask))
+                {
+                    await ObserveActiveRequestAsync();
+                    continue;
+                }
+
+                var incoming =
+                    await receiveTask;
+
+                if (incoming is null)
+                    break;
+
+                receiveTask =
+                    ReceiveTextMessageAsync(
+                        socket,
+                        cancellationToken);
+
+                await ProcessControlAsync(
+                    incoming);
+            }
+        }
+        finally
+        {
+            try
+            {
+                activeRequestCancellation
+                    ?.Cancel();
+            }
+            catch {}
+
+            if (activeRequestTask is not null)
+            {
+                await ObserveActiveRequestAsync();
+            }
+
+            queuedRequests.Clear();
         }
 
         if (socket.State is
@@ -432,12 +667,11 @@ public sealed class NovaLinkHostedService : BackgroundService
                     ChunkSize,
                     response.Body.Length - offset);
 
-            await socket.SendAsync(
+            await SendBinaryAsync(
+                socket,
                 response.Body.AsMemory(
                     offset,
                     count),
-                WebSocketMessageType.Binary,
-                endOfMessage: true,
                 cancellationToken);
 
             offset += count;
@@ -509,21 +743,54 @@ public sealed class NovaLinkHostedService : BackgroundService
             checked((int)stream.Length));
     }
 
-    private static async Task SendControlAsync(
+    private async Task SendControlAsync(
         ClientWebSocket socket,
         object value,
         CancellationToken cancellationToken)
     {
         var bytes =
-            JsonSerializer.SerializeToUtf8Bytes(
-                value,
-                JsonOptions);
+            JsonSerializer
+                .SerializeToUtf8Bytes(
+                    value,
+                    JsonOptions);
 
-        await socket.SendAsync(
-            bytes,
-            WebSocketMessageType.Text,
-            endOfMessage: true,
+        await _sendGate.WaitAsync(
             cancellationToken);
+
+        try
+        {
+            await socket.SendAsync(
+                bytes,
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                cancellationToken);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+    }
+
+    private async Task SendBinaryAsync(
+        ClientWebSocket socket,
+        ReadOnlyMemory<byte> bytes,
+        CancellationToken cancellationToken)
+    {
+        await _sendGate.WaitAsync(
+            cancellationToken);
+
+        try
+        {
+            await socket.SendAsync(
+                bytes,
+                WebSocketMessageType.Binary,
+                endOfMessage: true,
+                cancellationToken);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
     }
 
     private static Dictionary<string, string>
