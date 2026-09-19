@@ -106,8 +106,12 @@ static bool Authorized(
                 name)?
                 .Trim();
 
-        if (string.IsNullOrWhiteSpace(
-                token))
+        if (
+            string.IsNullOrWhiteSpace(
+                token) ||
+            Encoding.UTF8
+                .GetByteCount(token) >
+                4096)
         {
             continue;
         }
@@ -159,6 +163,17 @@ static bool Authorized(
         authorization[
             prefix.Length..]
             .Trim();
+
+    if (
+        string.IsNullOrEmpty(
+            supplied) ||
+        Encoding.UTF8
+            .GetByteCount(
+                supplied) >
+            4096)
+    {
+        return false;
+    }
 
     var suppliedBytes =
         Encoding.UTF8
