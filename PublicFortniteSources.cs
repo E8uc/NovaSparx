@@ -639,7 +639,8 @@ public sealed partial class PublicFortniteSources
                 return null;
 
             return await DownloadManifestFromAnyEndpoint(
-                downloadUrl,
+                RequirePublicHttpsEndpoint(
+                    downloadUrl),
                 cancellationToken);
         }
         catch (OperationCanceledException)
@@ -699,7 +700,7 @@ public sealed partial class PublicFortniteSources
                   tocPath.TrimStart('/');
 
             url =
-                RequireHttpEndpoint(
+                RequirePublicHttpsEndpoint(
                     url);
 
             var fileName = Path.GetFileName(
