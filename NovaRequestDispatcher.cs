@@ -149,7 +149,8 @@ public sealed class NovaRequestDispatcher
                 new
                 {
                     state = "error",
-                    error = ex.Message
+                    error =
+                        "NovaSparx internal error."
                 });
         }
     }
