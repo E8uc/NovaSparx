@@ -29,11 +29,25 @@ public sealed class ClientMeshPackageService
         string rawPath,
         CancellationToken cancellationToken)
     {
-        var resolved = await _meshes.ResolveAsync(rawPath, cancellationToken);
-        if (resolved is null) return null;
+        var resolved =
+            await _meshes.ResolveAsync(
+                rawPath,
+                cancellationToken);
 
-        var geometry = resolved.Manifest.Geometry;
-        ValidateGeometry(geometry);
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        if (resolved is null)
+            return null;
+
+        var geometry =
+            resolved.Manifest.Geometry;
+
+        ValidateGeometry(
+            geometry);
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
 
         var arrays = BuildArrayViews(geometry, out var payloadLength);
         var materials = resolved.Manifest.Materials.Select(SanitizeMaterial).ToArray();
@@ -64,7 +78,10 @@ public sealed class ClientMeshPackageService
                 isNanite = resolved.Manifest.IsNanite,
                 materialFidelity = resolved.Manifest.MaterialFidelity
             },
-            bounds = ComputeBounds(geometry.Positions),
+            bounds =
+                ComputeBounds(
+                    geometry.Positions,
+                    cancellationToken),
             arrays,
             sections = resolved.Manifest.Sections,
             materials,
@@ -78,7 +95,16 @@ public sealed class ClientMeshPackageService
             }
         };
 
-        var headerBytes = JsonSerializer.SerializeToUtf8Bytes(header, JsonOptions);
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        var headerBytes =
+            JsonSerializer.SerializeToUtf8Bytes(
+                header,
+                JsonOptions);
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
         var paddedHeaderLength = Align4(headerBytes.Length);
         var totalLength = checked(16 + paddedHeaderLength + payloadLength);
 
@@ -89,20 +115,81 @@ public sealed class ClientMeshPackageService
                 "A smaller Fortnite LOD is required for this asset.");
         }
 
-        using var stream = new MemoryStream(totalLength);
-        stream.Write(Magic);
-        WriteInt32(stream, headerBytes.Length);
-        WriteInt32(stream, paddedHeaderLength);
-        stream.Write(headerBytes);
-        if (paddedHeaderLength > headerBytes.Length)
-            stream.Write(new byte[paddedHeaderLength - headerBytes.Length]);
+        cancellationToken
+            .ThrowIfCancellationRequested();
 
-        WriteArray(stream, geometry.Positions);
-        WriteArray(stream, geometry.Normals);
-        WriteArray(stream, geometry.Tangents);
-        WriteArray(stream, geometry.Uv0);
-        if (geometry.Colors is not null) WriteArray(stream, geometry.Colors);
-        WriteArray(stream, geometry.Indices);
+        using var stream =
+            new MemoryStream(
+                totalLength);
+
+        stream.Write(Magic);
+        WriteInt32(
+            stream,
+            headerBytes.Length);
+        WriteInt32(
+            stream,
+            paddedHeaderLength);
+        stream.Write(
+            headerBytes);
+
+        if (
+            paddedHeaderLength >
+            headerBytes.Length)
+        {
+            stream.Write(
+                new byte[
+                    paddedHeaderLength -
+                    headerBytes.Length]);
+        }
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        WriteArray(
+            stream,
+            geometry.Positions);
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        WriteArray(
+            stream,
+            geometry.Normals);
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        WriteArray(
+            stream,
+            geometry.Tangents);
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        WriteArray(
+            stream,
+            geometry.Uv0);
+
+        if (
+            geometry.Colors is not null)
+        {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
+            WriteArray(
+                stream,
+                geometry.Colors);
+        }
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
+
+        WriteArray(
+            stream,
+            geometry.Indices);
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
 
         if (stream.Length != totalLength)
             throw new InvalidOperationException("NovaSparx produced an inconsistent mesh package.");
@@ -209,14 +296,27 @@ public sealed class ClientMeshPackageService
         return output;
     }
 
-    private static ClientBounds ComputeBounds(float[] positions)
+    private static ClientBounds ComputeBounds(
+        float[] positions,
+        CancellationToken cancellationToken)
     {
         var min = new[] { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
         var max = new[] { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
 
-        for (var i = 0; i + 2 < positions.Length; i += 3)
+        for (
+            var i = 0;
+            i + 2 < positions.Length;
+            i += 3)
         {
-            var x = positions[i]; var y = positions[i + 1]; var z = positions[i + 2];
+            if ((i & 12287) == 0)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+            }
+
+            var x = positions[i];
+            var y = positions[i + 1];
+            var z = positions[i + 2];
             if (!float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(z)) continue;
             min[0] = Math.Min(min[0], x); min[1] = Math.Min(min[1], y); min[2] = Math.Min(min[2], z);
             max[0] = Math.Max(max[0], x); max[1] = Math.Max(max[1], y); max[2] = Math.Max(max[2], z);
