@@ -22,6 +22,8 @@ public static partial class AssetReferenceScanner
     private const int MaxProperties = 96;
     private const int MaxCollectionItems = 24;
     private const int MaxTextLength = 1200;
+    private const int MaxReferenceNodes = 4096;
+    private const int MaxReferences = 512;
 
     [GeneratedRegex(
         @"(?<path>(?:/(?:Game|Engine|[A-Za-z0-9_]+)/|(?:FortniteGame|Engine)/)[A-Za-z0-9_./\-]+)",
@@ -44,6 +46,7 @@ public static partial class AssetReferenceScanner
                 StringComparer.OrdinalIgnoreCase);
 
         var propertyCount = 0;
+        var referenceNodes = 0;
 
         foreach (var property in value.Properties)
         {
@@ -96,7 +99,8 @@ public static partial class AssetReferenceScanner
                 $"property:{name}",
                 references,
                 seenReferences,
-                depth: 0);
+                depth: 0,
+                ref referenceNodes);
         }
 
         facts["propertyCount"] =
@@ -206,10 +210,19 @@ public static partial class AssetReferenceScanner
         string kind,
         List<AssetReference> references,
         HashSet<string> seen,
-        int depth)
+        int depth,
+        ref int visitedNodes)
     {
-        if (value is null || depth >= 4)
+        if (
+            value is null ||
+            depth >= 4 ||
+            references.Count >=
+                MaxReferences ||
+            visitedNodes++ >=
+                MaxReferenceNodes)
+        {
             return;
+        }
 
         if (value is UObject unrealObject)
         {
@@ -251,14 +264,16 @@ public static partial class AssetReferenceScanner
                     kind,
                     references,
                     seen,
-                    depth + 1);
+                    depth + 1,
+                    ref visitedNodes);
 
                 CollectReferences(
                     pair.Value,
                     kind,
                     references,
                     seen,
-                    depth + 1);
+                    depth + 1,
+                    ref visitedNodes);
             }
 
             return;
@@ -278,7 +293,8 @@ public static partial class AssetReferenceScanner
                     kind,
                     references,
                     seen,
-                    depth + 1);
+                    depth + 1,
+                    ref visitedNodes);
             }
 
             return;
@@ -364,8 +380,14 @@ public static partial class AssetReferenceScanner
         List<AssetReference> references,
         HashSet<string> seen)
     {
-        if (string.IsNullOrWhiteSpace(path))
+        if (
+            string.IsNullOrWhiteSpace(path) ||
+            references.Count >=
+                MaxReferences
+        )
+        {
             return;
+        }
 
         path =
             path.Replace('\\', '/')
