@@ -571,7 +571,7 @@ public sealed class LiveProviderService : IDisposable
             catch (Exception ex)
             {
                 _lastError =
-                    ex.Message;
+                    "Provider initialization failed.";
 
                 provider?.Dispose();
 
@@ -673,7 +673,8 @@ public sealed class LiveProviderService : IDisposable
                 BuildStaticMeshEnvelope(
                     mesh,
                     canonical,
-                    loaded.ResolvedPath);
+                    loaded.ResolvedPath,
+                    cancellationToken);
 
             if (
                 PreviewCacheMaxEntries >
@@ -782,6 +783,9 @@ public sealed class LiveProviderService : IDisposable
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                     _log.LogDebug(
                         ex,
                         "Material inspection failed for {Path}.",
@@ -816,7 +820,8 @@ public sealed class LiveProviderService : IDisposable
                             BuildStaticMeshEnvelope(
                                 mesh,
                                 canonical,
-                                loaded.ResolvedPath);
+                                loaded.ResolvedPath,
+                                cancellationToken);
 
                         materials =
                             envelope.Manifest.Materials;
@@ -847,6 +852,9 @@ public sealed class LiveProviderService : IDisposable
                     }
                     catch (Exception ex)
                     {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                         _log.LogDebug(
                             ex,
                             "StaticMesh inspection geometry/material pass failed for {Path}.",
@@ -931,6 +939,9 @@ public sealed class LiveProviderService : IDisposable
             }
             catch (Exception ex)
             {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                 _log.LogDebug(
                     ex,
                     "Asset candidate failed: {Candidate}",
@@ -945,8 +956,11 @@ public sealed class LiveProviderService : IDisposable
         BuildStaticMeshEnvelope(
             UStaticMesh mesh,
             string canonical,
-            string resolved)
+            string resolved,
+            CancellationToken cancellationToken)
     {
+        cancellationToken
+            .ThrowIfCancellationRequested();
         // Keep the conversion API already verified against the repository's
         // pinned CUE4Parse-Conversion package:
         // 1.2.2.202608.
@@ -965,6 +979,9 @@ public sealed class LiveProviderService : IDisposable
 
         using (converted)
         {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
             if (converted.LODs.Count == 0)
             {
                 throw new InvalidOperationException(
@@ -1004,6 +1021,9 @@ public sealed class LiveProviderService : IDisposable
                  index < converted.LODs.Count;
                  index++)
             {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 var lod =
                     converted.LODs[index];
 
@@ -1033,6 +1053,9 @@ public sealed class LiveProviderService : IDisposable
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                     _log.LogDebug(
                         ex,
                         "Failed to materialize StaticMesh LOD {LodIndex}.",
@@ -1107,6 +1130,12 @@ public sealed class LiveProviderService : IDisposable
                  index < vertexCount;
                  index++)
             {
+                if ((index & 4095) == 0)
+                {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+                }
+
                 var vertex =
                     vertices[index];
 
@@ -1162,6 +1191,12 @@ public sealed class LiveProviderService : IDisposable
                      index < vertexCount;
                      index++)
                 {
+                    if ((index & 4095) == 0)
+                    {
+                        cancellationToken
+                            .ThrowIfCancellationRequested();
+                    }
+
                     var color =
                         vertexColors[index];
 
@@ -1217,6 +1252,9 @@ public sealed class LiveProviderService : IDisposable
             {
                 foreach (var reference in source)
                 {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                     var key =
                         $"{reference.Kind}|{reference.Path}";
 
@@ -1229,6 +1267,9 @@ public sealed class LiveProviderService : IDisposable
                  materialIndex < materialCount;
                  materialIndex++)
             {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 var section =
                     rawSections.FirstOrDefault(
                         candidate =>
@@ -1262,6 +1303,9 @@ public sealed class LiveProviderService : IDisposable
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                     _log.LogDebug(
                         ex,
                         "Could not fully resolve material slot {MaterialIndex}.",
