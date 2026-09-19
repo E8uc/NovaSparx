@@ -238,8 +238,11 @@ public sealed class NovaRequestDispatcher
             hasError =
                 !string.IsNullOrWhiteSpace(
                     health.LastError),
-            lastError =
-                health.LastError,
+            errorState =
+                string.IsNullOrWhiteSpace(
+                    health.LastError)
+                    ? null
+                    : "provider-initialization-failed",
             health.TextureStreamingReady,
             providerPreviewCacheEntries =
                 health.PreviewCacheEntries,
