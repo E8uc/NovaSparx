@@ -58,7 +58,13 @@ public sealed partial class PublicFortniteSources
                     clean,
                     UriKind.Absolute,
                     out var uri) ||
-                uri.Scheme is not ("http" or "https"))
+                uri.Scheme is not ("http" or "https") ||
+                (
+                    uri.Scheme.Equals(
+                        "http",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    !uri.IsLoopback
+                ))
             {
                 return null;
             }
@@ -88,10 +94,16 @@ public sealed partial class PublicFortniteSources
                 clean,
                 UriKind.Absolute,
                 out var uri) ||
-            uri.Scheme is not ("http" or "https"))
+            uri.Scheme is not ("http" or "https") ||
+            (
+                uri.Scheme.Equals(
+                    "http",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !uri.IsLoopback
+            ))
         {
             throw new InvalidOperationException(
-                "NovaSparx received an invalid manifest URL.");
+                "NovaSparx received an invalid or insecure HTTP URL.");
         }
 
         return uri.ToString();
@@ -768,6 +780,10 @@ public sealed partial class PublicFortniteSources
             string url,
             CancellationToken cancellationToken)
     {
+        url =
+            RequireHttpEndpoint(
+                url);
+
         var bytes =
             await _http.GetByteArrayAsync(
                 url,
