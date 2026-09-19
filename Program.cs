@@ -323,10 +323,6 @@ app.MapGet(
     "/",
     () =>
     {
-        var linkUrl =
-            Environment.GetEnvironmentVariable(
-                "NOVASPARX_LINK_URL");
-
         return Results.Json(
             new
             {
@@ -350,9 +346,6 @@ app.MapGet(
                     ClientMeshPackageService.Schema,
                 serverSide3dRendering =
                     false,
-                autoLinkConfigured =
-                    !string.IsNullOrWhiteSpace(
-                        linkUrl),
                 endpoints =
                     new[]
                     {
