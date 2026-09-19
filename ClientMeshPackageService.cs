@@ -16,10 +16,35 @@ public sealed class ClientMeshPackageService
 
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("NSMESH1\0");
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private static readonly int MaxPackageBytes = int.TryParse(
-        Environment.GetEnvironmentVariable("NOVASPARX_CLIENT_PACKAGE_MAX_BYTES"), out var bytes)
-        ? Math.Clamp(bytes, 8 * 1024 * 1024, 60 * 1024 * 1024)
-        : 48 * 1024 * 1024;
+
+    private const int DefaultMaxPackageBytes =
+        8 * 1024 * 1024;
+
+    private const int HardMaxPackageBytes =
+        16 * 1024 * 1024;
+
+    private const int MaxHeaderBytes =
+        512 * 1024;
+
+    private const int MaxMaterialCount =
+        512;
+
+    private const int MaxSectionCount =
+        4096;
+
+    private const int MaxTexturePathCount =
+        1024;
+
+    private static readonly int MaxPackageBytes =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_CLIENT_PACKAGE_MAX_BYTES"),
+            out var bytes)
+            ? Math.Clamp(
+                bytes,
+                4 * 1024 * 1024,
+                HardMaxPackageBytes)
+            : DefaultMaxPackageBytes;
 
     private readonly MeshResolverService _meshes;
 
@@ -44,23 +69,113 @@ public sealed class ClientMeshPackageService
             resolved.Manifest.Geometry;
 
         ValidateGeometry(
-            geometry);
+            geometry,
+            cancellationToken);
 
         cancellationToken
             .ThrowIfCancellationRequested();
 
-        var arrays = BuildArrayViews(geometry, out var payloadLength);
-        var materials = resolved.Manifest.Materials.Select(SanitizeMaterial).ToArray();
-        var texturePaths = materials
-            .SelectMany(m => new[] {
-                m.BaseColorTexture, m.NormalTexture, m.EmissiveTexture,
-                m.OpacityTexture, m.PackedTexture
-            })
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .Select(path => AssetPathResolver.Canonicalize(path!))
-            .Where(path => path.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        if (
+            resolved.Manifest.Sections.Length >
+                MaxSectionCount ||
+            resolved.Manifest.Materials.Length >
+                MaxMaterialCount)
+        {
+            throw new InvalidOperationException(
+                "Mesh metadata exceeds the NovaSparx browser package budget.");
+        }
+
+        var arrays =
+            BuildArrayViews(
+                geometry,
+                out var payloadLength);
+
+        if (
+            payloadLength >
+            MaxPackageBytes)
+        {
+            throw new InvalidOperationException(
+                "Mesh geometry exceeds the NovaSparx browser package budget.");
+        }
+
+        var sourceMaterials =
+            resolved.Manifest.Materials;
+
+        var materials =
+            new ClientMaterialHeader[
+                sourceMaterials.Length];
+
+        for (
+            var index = 0;
+            index < sourceMaterials.Length;
+            index++)
+        {
+            if ((index & 31) == 0)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+            }
+
+            materials[index] =
+                SanitizeMaterial(
+                    sourceMaterials[index]);
+        }
+
+        var texturePaths =
+            new List<string>();
+
+        var seenTexturePaths =
+            new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var material in materials)
+        {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
+            foreach (
+                var rawTexturePath in
+                new[]
+                {
+                    material.BaseColorTexture,
+                    material.NormalTexture,
+                    material.EmissiveTexture,
+                    material.OpacityTexture,
+                    material.PackedTexture
+                })
+            {
+                if (
+                    string.IsNullOrWhiteSpace(
+                        rawTexturePath))
+                {
+                    continue;
+                }
+
+                var cleanTexturePath =
+                    AssetPathResolver
+                        .Canonicalize(
+                            rawTexturePath);
+
+                if (
+                    cleanTexturePath.Length == 0 ||
+                    !seenTexturePaths.Add(
+                        cleanTexturePath))
+                {
+                    continue;
+                }
+
+                if (
+                    texturePaths.Count >=
+                    MaxTexturePathCount)
+                {
+                    throw new InvalidOperationException(
+                        "Mesh texture metadata exceeds the NovaSparx browser package budget.");
+                }
+
+                texturePaths.Add(
+                    cleanTexturePath);
+            }
+        }
 
         var header = new
         {
@@ -105,7 +220,18 @@ public sealed class ClientMeshPackageService
 
         cancellationToken
             .ThrowIfCancellationRequested();
-        var paddedHeaderLength = Align4(headerBytes.Length);
+
+        if (
+            headerBytes.Length >
+            MaxHeaderBytes)
+        {
+            throw new InvalidOperationException(
+                "Mesh metadata header exceeds the NovaSparx browser package budget.");
+        }
+
+        var paddedHeaderLength =
+            Align4(
+                headerBytes.Length);
         var totalLength = checked(16 + paddedHeaderLength + payloadLength);
 
         if (totalLength > MaxPackageBytes)
@@ -237,20 +363,85 @@ public sealed class ClientMeshPackageService
         return result;
     }
 
-    private static void ValidateGeometry(PreviewGeometry geometry)
+    private static void ValidateGeometry(
+        PreviewGeometry geometry,
+        CancellationToken cancellationToken)
     {
-        if (geometry.Positions.Length == 0 || geometry.Positions.Length % 3 != 0)
-            throw new InvalidOperationException("Mesh positions are empty or malformed.");
+        if (
+            geometry.Positions.Length == 0 ||
+            geometry.Positions.Length % 3 != 0)
+        {
+            throw new InvalidOperationException(
+                "Mesh positions are empty or malformed.");
+        }
 
-        var vertices = geometry.Positions.Length / 3;
-        if (geometry.Normals.Length != vertices * 3 ||
-            geometry.Tangents.Length != vertices * 4 ||
-            geometry.Uv0.Length != vertices * 2 ||
-            (geometry.Colors is not null && geometry.Colors.Length != vertices * 4))
-            throw new InvalidOperationException("Mesh vertex streams do not have matching lengths.");
+        var vertices =
+            geometry.Positions.Length / 3;
 
-        if (geometry.Indices.Length == 0 || geometry.Indices.Length % 3 != 0)
-            throw new InvalidOperationException("Mesh indices are empty or malformed.");
+        if (
+            geometry.Normals.Length !=
+                vertices * 3 ||
+            geometry.Tangents.Length !=
+                vertices * 4 ||
+            geometry.Uv0.Length !=
+                vertices * 2 ||
+            (
+                geometry.Colors is not null &&
+                geometry.Colors.Length !=
+                    vertices * 4
+            ))
+        {
+            throw new InvalidOperationException(
+                "Mesh vertex streams do not have matching lengths.");
+        }
+
+        if (
+            geometry.Indices.Length == 0 ||
+            geometry.Indices.Length % 3 != 0)
+        {
+            throw new InvalidOperationException(
+                "Mesh indices are empty or malformed.");
+        }
+
+        for (
+            var index = 0;
+            index < geometry.Positions.Length;
+            index++)
+        {
+            if ((index & 4095) == 0)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+            }
+
+            if (
+                !float.IsFinite(
+                    geometry.Positions[index]))
+            {
+                throw new InvalidOperationException(
+                    "Mesh positions contain non-finite values.");
+            }
+        }
+
+        for (
+            var index = 0;
+            index < geometry.Indices.Length;
+            index++)
+        {
+            if ((index & 4095) == 0)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+            }
+
+            if (
+                geometry.Indices[index] >=
+                vertices)
+            {
+                throw new InvalidOperationException(
+                    "Mesh indices reference vertices outside the geometry buffer.");
+            }
+        }
     }
 
     private static ClientMaterialHeader SanitizeMaterial(PreviewMaterial material) => new(
