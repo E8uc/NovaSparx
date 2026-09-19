@@ -118,9 +118,15 @@ public sealed class AssetInspectorService
         {
             try
             {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 material =
                     MaterialResolver.Resolve(
                         unrealMaterial);
+
+                cancellationToken
+                    .ThrowIfCancellationRequested();
 
                 materials =
                     [material];
@@ -149,6 +155,13 @@ public sealed class AssetInspectorService
 
                 facts["materialEvidence"] =
                     material.Evidence;
+            }
+            catch (OperationCanceledException)
+                when (
+                    cancellationToken
+                        .IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
