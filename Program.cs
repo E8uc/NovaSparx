@@ -373,30 +373,24 @@ static async Task DispatchHttpAsync(
             "1";
     }
 
+    // Direct /v1 responses are authenticated and must never become shared
+    // intermediary cache entries. The public Cloudflare edge owns any
+    // explicitly safe client-facing cache policy.
+    context.Response.Headers
+        .CacheControl =
+        "private, no-store";
+
     if (response.Status == 200 &&
         response.ContentType.StartsWith(
             "image/",
             StringComparison.OrdinalIgnoreCase))
     {
         context.Response.Headers
-            .CacheControl =
-            "public, max-age=1800";
-
-        context.Response.Headers
             .ETag =
             $"\"{Convert.ToHexString(
                 SHA256.HashData(
                     response.Body))
                 .ToLowerInvariant()}\"";
-    }
-    else
-    {
-        // Mesh packages can be large and represent live Fortnite data. The
-        // Cloudflare edge may apply its own short cache, while the origin does
-        // not retain authenticated responses in intermediary caches.
-        context.Response.Headers
-            .CacheControl =
-            "no-store";
     }
 
     if (response.Body.Length > 0)
