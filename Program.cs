@@ -71,6 +71,18 @@ builder.WebHost
                 64 * 1024;
 
             options.Limits
+                    .MaxRequestLineSize =
+                8 * 1024;
+
+            options.Limits
+                    .MaxRequestHeadersTotalSize =
+                16 * 1024;
+
+            options.Limits
+                    .MaxRequestHeaderCount =
+                64;
+
+            options.Limits
                     .KeepAliveTimeout =
                 TimeSpan.FromMinutes(3);
 
@@ -207,17 +219,53 @@ static Dictionary<string, string>
     QueryDictionary(
         HttpRequest request)
 {
+    const int maxQueryParameters =
+        16;
+
+    const int maxQueryKeyLength =
+        64;
+
+    const int maxQueryValueLength =
+        4096;
+
+    if (
+        request.Query.Count >
+        maxQueryParameters)
+    {
+        throw new BadHttpRequestException(
+            "Too many query parameters.",
+            StatusCodes.Status400BadRequest);
+    }
+
     var result =
         new Dictionary<string, string>(
             StringComparer.OrdinalIgnoreCase);
 
     foreach (var pair in request.Query)
     {
-        if (!result.ContainsKey(
-                pair.Key))
+        var key =
+            pair.Key.Trim();
+
+        var value =
+            pair.Value.ToString();
+
+        if (
+            key.Length == 0 ||
+            key.Length >
+                maxQueryKeyLength ||
+            value.Length >
+                maxQueryValueLength)
         {
-            result[pair.Key] =
-                pair.Value.ToString();
+            throw new BadHttpRequestException(
+                "Query parameter exceeds the allowed size.",
+                StatusCodes.Status400BadRequest);
+        }
+
+        if (!result.ContainsKey(
+                key))
+        {
+            result[key] =
+                value;
         }
     }
 
