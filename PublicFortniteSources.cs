@@ -415,6 +415,13 @@ public sealed partial class PublicFortniteSources
                 url,
                 bytes);
         }
+        catch (OperationCanceledException)
+            when (
+                cancellationToken
+                    .IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _log.LogWarning(
@@ -743,6 +750,13 @@ public sealed partial class PublicFortniteSources
                     if (provider is not null)
                         return provider;
                 }
+            }
+            catch (OperationCanceledException)
+                when (
+                    cancellationToken
+                        .IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
