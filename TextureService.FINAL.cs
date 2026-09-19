@@ -217,11 +217,17 @@ public sealed class TextureService
                         $"({decoded.Width}x{decoded.Height} > {MaxDecodedPixels:N0} pixels).");
                 }
 
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 var png =
                     decoded.Encode(
                         ETextureFormat.Png,
                         false,
                         out var extension);
+
+                cancellationToken
+                    .ThrowIfCancellationRequested();
 
                 if (!extension.Equals(
                         "png",
