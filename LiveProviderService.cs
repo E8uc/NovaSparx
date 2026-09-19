@@ -28,7 +28,7 @@ namespace NovaSparx.Backend;
 /// </summary>
 public sealed class LiveProviderService : IDisposable
 {
-    public const string BackendVersion = "1.1.3";
+    public const string BackendVersion = "1.1.4";
 
     private readonly PublicFortniteSources _sources;
     private readonly ILogger<LiveProviderService> _log;
