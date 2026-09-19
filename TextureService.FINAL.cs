@@ -27,10 +27,10 @@ public sealed class TextureService
         TexturePayload Value);
 
     private static readonly bool LowMemoryMode =
-        bool.TryParse(
+        !bool.TryParse(
             Environment.GetEnvironmentVariable(
                 "NOVASPARX_LOW_MEMORY_MODE"),
-            out var lowMemoryMode) &&
+            out var lowMemoryMode) ||
         lowMemoryMode;
 
     private static readonly TimeSpan CacheTtl =
@@ -73,7 +73,9 @@ public sealed class TextureService
                 "NOVASPARX_TEXTURE_MAX_SIZE"),
             out var maxSize)
             ? Math.Clamp(maxSize, 64, 4096)
-            : 2048;
+            : LowMemoryMode
+                ? 1024
+                : 2048;
 
     private static readonly int MaxEncodedBytes =
         int.TryParse(
@@ -84,7 +86,9 @@ public sealed class TextureService
                 maxBytes,
                 256 * 1024,
                 32 * 1024 * 1024)
-            : 12 * 1024 * 1024;
+            : LowMemoryMode
+                ? 4 * 1024 * 1024
+                : 12 * 1024 * 1024;
 
     private static readonly long MaxDecodedPixels =
         long.TryParse(
@@ -281,6 +285,13 @@ public sealed class TextureService
                 }
 
                 return payload;
+            }
+            catch (OperationCanceledException)
+                when (
+                    cancellationToken
+                        .IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
