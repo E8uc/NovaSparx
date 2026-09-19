@@ -260,6 +260,13 @@ public sealed class NovaHybridFileProvider : AbstractVfsFileProvider
                     !current.AsSpan()
                         .SequenceEqual(tocBytes);
             }
+            catch (OperationCanceledException)
+                when (
+                    cancellationToken
+                        .IsCancellationRequested)
+            {
+                throw;
+            }
             catch
             {
                 // Rewrite a corrupted/unreadable cached TOC.
