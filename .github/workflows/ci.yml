@@ -30,6 +30,14 @@ jobs:
       - name: Build reference-index tool
         run: dotnet build tools/NovaSparx.ReferenceIndex/NovaSparx.ReferenceIndex.csproj --configuration Release
 
+      - name: Probe CUE4Parse browser-WASM compatibility
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet workload install wasm-tools
+          dotnet build tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release
+
       - name: Check shell startup script
         run: bash -n start.sh
 
