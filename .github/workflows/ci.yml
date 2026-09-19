@@ -30,6 +30,12 @@ jobs:
       - name: Build reference-index tool
         run: dotnet build tools/NovaSparx.ReferenceIndex/NovaSparx.ReferenceIndex.csproj --configuration Release
 
+      - name: Check shell startup script
+        run: bash -n start.sh
+
+      - name: Validate web package metadata
+        run: node -e "JSON.parse(require('fs').readFileSync('web/package.json','utf8'))"
+
       - name: Check browser modules
         run: |
           node --check web/novasparx-format.js
