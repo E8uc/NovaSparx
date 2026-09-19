@@ -301,12 +301,53 @@ static async Task DispatchHttpAsync(
         return;
     }
 
+    Dictionary<string, string>
+        query;
+
+    try
+    {
+        query =
+            QueryDictionary(
+                context.Request);
+    }
+    catch (BadHttpRequestException ex)
+    {
+        context.Response.StatusCode =
+            ex.StatusCode;
+
+        context.Response.ContentType =
+            "application/json; charset=utf-8";
+
+        context.Response.Headers[
+            "X-Content-Type-Options"] =
+            "nosniff";
+
+        context.Response.Headers[
+            "Referrer-Policy"] =
+            "no-referrer";
+
+        context.Response.Headers
+            .CacheControl =
+            "no-store";
+
+        await context.Response
+            .WriteAsJsonAsync(
+                new
+                {
+                    state = "error",
+                    error =
+                        "Invalid request query."
+                },
+                cancellationToken);
+
+        return;
+    }
+
     var response =
         await dispatcher.DispatchAsync(
             context.Request.Method,
             route,
-            QueryDictionary(
-                context.Request),
+            query,
             cancellationToken);
 
     context.Response.StatusCode =
