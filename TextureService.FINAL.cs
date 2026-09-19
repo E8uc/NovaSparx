@@ -26,6 +26,13 @@ public sealed class TextureService
         DateTimeOffset CreatedAt,
         TexturePayload Value);
 
+    private static readonly bool LowMemoryMode =
+        bool.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_LOW_MEMORY_MODE"),
+            out var lowMemoryMode) &&
+        lowMemoryMode;
+
     private static readonly TimeSpan CacheTtl =
         TimeSpan.FromMinutes(
             int.TryParse(
@@ -33,7 +40,32 @@ public sealed class TextureService
                     "NOVASPARX_TEXTURE_CACHE_MINUTES"),
                 out var minutes)
                 ? Math.Clamp(minutes, 1, 180)
-                : 30);
+                : LowMemoryMode
+                    ? 1
+                    : 30);
+
+    private static readonly int MaxCacheEntries =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_TEXTURE_CACHE_MAX_ENTRIES"),
+            out var cacheEntries)
+            ? Math.Clamp(cacheEntries, 0, 64)
+            : LowMemoryMode
+                ? 1
+                : 12;
+
+    private static readonly long MaxCacheBytes =
+        long.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_TEXTURE_CACHE_MAX_BYTES"),
+            out var cacheBytes)
+            ? Math.Clamp(
+                cacheBytes,
+                0,
+                128L * 1024 * 1024)
+            : LowMemoryMode
+                ? 4L * 1024 * 1024
+                : 48L * 1024 * 1024;
 
     private static readonly int MaxMipSize =
         int.TryParse(
@@ -197,12 +229,25 @@ public sealed class TextureService
                         Height:
                             decoded.Height);
 
-                TrimCacheIfNeeded();
+                cancellationToken
+                    .ThrowIfCancellationRequested();
 
-                _cache[canonical] =
-                    new CacheEntry(
-                        DateTimeOffset.UtcNow,
-                        payload);
+                TrimCacheIfNeeded(
+                    payload.Bytes
+                        .LongLength);
+
+                if (
+                    MaxCacheEntries > 0 &&
+                    MaxCacheBytes > 0 &&
+                    payload.Bytes
+                        .LongLength <=
+                    MaxCacheBytes)
+                {
+                    _cache[canonical] =
+                        new CacheEntry(
+                            DateTimeOffset.UtcNow,
+                            payload);
+                }
 
                 return payload;
             }
@@ -227,26 +272,67 @@ public sealed class TextureService
         _cache.Clear();
     }
 
-    private void TrimCacheIfNeeded()
+    private void TrimCacheIfNeeded(
+        long incomingBytes)
     {
-        if (_cache.Count <= 220)
-            return;
-
-        var oldest =
-            _cache
-                .OrderBy(
-                    pair =>
-                        pair.Value.CreatedAt)
-                .Take(60)
-                .Select(
-                    pair =>
-                        pair.Key)
-                .ToArray();
-
-        foreach (var key in oldest)
+        if (
+            MaxCacheEntries <= 0 ||
+            MaxCacheBytes <= 0)
         {
+            _cache.Clear();
+            return;
+        }
+
+        var now =
+            DateTimeOffset.UtcNow;
+
+        foreach (
+            var pair in
+            _cache.ToArray())
+        {
+            if (
+                now -
+                pair.Value.CreatedAt >=
+                CacheTtl)
+            {
+                _cache.TryRemove(
+                    pair.Key,
+                    out _);
+            }
+        }
+
+        long CurrentBytes() =>
+            _cache.Sum(
+                pair =>
+                    pair.Value.Value
+                        .Bytes.LongLength);
+
+        while (
+            _cache.Count >=
+                MaxCacheEntries ||
+            CurrentBytes() +
+                incomingBytes >
+                MaxCacheBytes)
+        {
+            var oldest =
+                _cache
+                    .OrderBy(
+                        pair =>
+                            pair.Value.CreatedAt)
+                    .Select(
+                        pair =>
+                            pair.Key)
+                    .FirstOrDefault();
+
+            if (
+                string.IsNullOrEmpty(
+                    oldest))
+            {
+                break;
+            }
+
             _cache.TryRemove(
-                key,
+                oldest,
                 out _);
         }
     }
