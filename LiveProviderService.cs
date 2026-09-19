@@ -327,6 +327,13 @@ public sealed class LiveProviderService : IDisposable
                                 cancellationToken);
                         }
                     }
+                    catch (OperationCanceledException)
+                        when (
+                            cancellationToken
+                                .IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         _log.LogWarning(
@@ -366,6 +373,13 @@ public sealed class LiveProviderService : IDisposable
                                         cancellationToken);
                         }
                     }
+                    catch (OperationCanceledException)
+                        when (
+                            cancellationToken
+                                .IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         _log.LogWarning(
@@ -388,7 +402,13 @@ public sealed class LiveProviderService : IDisposable
                         compacting: true);
                 }
 
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 provider.Initialize();
+
+                cancellationToken
+                    .ThrowIfCancellationRequested();
 
                 // Current Fortnite USMAP mappings.
                 try
@@ -402,6 +422,13 @@ public sealed class LiveProviderService : IDisposable
                         provider.MappingsContainer =
                             mappings;
                     }
+                }
+                catch (OperationCanceledException)
+                    when (
+                        cancellationToken
+                            .IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -427,6 +454,13 @@ public sealed class LiveProviderService : IDisposable
                             pair.Value);
                     }
                 }
+                catch (OperationCanceledException)
+                    when (
+                        cancellationToken
+                            .IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     _log.LogWarning(
@@ -437,35 +471,69 @@ public sealed class LiveProviderService : IDisposable
                 try
                 {
                     await provider.MountAsync();
+
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+                }
+                catch (OperationCanceledException)
+                    when (
+                        cancellationToken
+                            .IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                     _log.LogWarning(
                         ex,
                         "One or more archives failed to mount.");
                 }
 
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 try
                 {
                     provider.LoadVirtualPaths();
+
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                     _log.LogWarning(
                         ex,
                         "Virtual path loading failed.");
                 }
 
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
                 try
                 {
                     provider.PostMount();
+
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
                 }
                 catch (Exception ex)
                 {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
                     _log.LogWarning(
                         ex,
                         "PostMount validation reported an error.");
                 }
+
+                cancellationToken
+                    .ThrowIfCancellationRequested();
 
                 _provider =
                     provider;
@@ -491,6 +559,14 @@ public sealed class LiveProviderService : IDisposable
                     _provider.Files.Count,
                     _provider.Keys.Count,
                     _provider.RequiredKeys.Count);
+            }
+            catch (OperationCanceledException)
+                when (
+                    cancellationToken
+                        .IsCancellationRequested)
+            {
+                provider?.Dispose();
+                throw;
             }
             catch (Exception ex)
             {
