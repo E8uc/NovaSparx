@@ -43,6 +43,29 @@ public sealed class NovaLinkHostedService : BackgroundService
     private const int MaxControlMessageBytes =
         256 * 1024;
 
+    private static readonly int MaxQueuedRequests =
+        int.TryParse(
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_LINK_MAX_QUEUE"),
+            out var maxQueuedRequests)
+            ? Math.Clamp(
+                maxQueuedRequests,
+                1,
+                32)
+            : 4;
+
+    private static readonly TimeSpan RequestTimeout =
+        TimeSpan.FromSeconds(
+            int.TryParse(
+                Environment.GetEnvironmentVariable(
+                    "NOVASPARX_LINK_REQUEST_TIMEOUT_SECONDS"),
+                out var timeoutSeconds)
+                ? Math.Clamp(
+                    timeoutSeconds,
+                    10,
+                    120)
+                : 45);
+
     private readonly NovaRequestDispatcher _dispatcher;
     private readonly ILogger<NovaLinkHostedService> _log;
 
@@ -291,8 +314,13 @@ public sealed class NovaLinkHostedService : BackgroundService
                     .CreateLinkedTokenSource(
                         cancellationToken);
 
+            activeRequestCancellation
+                .CancelAfter(
+                    RequestTimeout);
+
             activeRequestId =
-                request.Id;
+                request.Id?
+                    .Trim();
 
             activeRequestTask =
                 HandleRequestAsync(
@@ -517,6 +545,43 @@ public sealed class NovaLinkHostedService : BackgroundService
                 return;
             }
 
+            var requestId =
+                request.Id.Trim();
+
+            if (
+                requestId.Length > 128 ||
+                !string.Equals(
+                    requestId,
+                    request.Id,
+                    StringComparison.Ordinal) ||
+                (request.Path?.Length ?? 0) >
+                    4096 ||
+                (request.Query?.Count ?? 0) >
+                    32 ||
+                (
+                    request.Query is not null &&
+                    request.Query.Any(
+                        pair =>
+                            pair.Key.Length > 128 ||
+                            pair.Value.Length > 4096)
+                ))
+            {
+                await SendControlAsync(
+                    socket,
+                    new
+                    {
+                        type =
+                            "cancelled",
+                        id =
+                            requestId,
+                        reason =
+                            "invalid-request"
+                    },
+                    cancellationToken);
+
+                return;
+            }
+
             if (activeRequestTask is null)
             {
                 StartRequest(
@@ -527,6 +592,26 @@ public sealed class NovaLinkHostedService : BackgroundService
 
             // Responses stay sequential so binary chunks remain unambiguous,
             // while the receive loop stays alive for cancel controls.
+            if (
+                queuedRequests.Count >=
+                MaxQueuedRequests)
+            {
+                await SendControlAsync(
+                    socket,
+                    new
+                    {
+                        type =
+                            "cancelled",
+                        id =
+                            requestId,
+                        reason =
+                            "queue-full"
+                    },
+                    cancellationToken);
+
+                return;
+            }
+
             queuedRequests.Add(
                 request);
         }
