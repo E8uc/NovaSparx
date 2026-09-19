@@ -155,7 +155,15 @@
           ? 480_000
           : 1_200_000;
 
+  const previewTimeoutMs =
+    isIOS
+      ? 16_000
+      : isMobile
+        ? 20_000
+        : 35_000;
+
   let activeController = null;
+  let activeOperationId = 0;
   let pressureState = "normal";
   let lastReason = "";
   let lastMeasurement = null;
@@ -494,48 +502,137 @@
     };
   }
 
-  function beginOperation(label = "preview") {
-    activeController?.abort(
-      "replaced-by-new-preview"
+  function beginOperation(
+    label = "request"
+  ) {
+    abortActive(
+      "replaced-by-new-request"
     );
 
-    activeController =
+    const controller =
       new AbortController();
 
-    activeController.label =
-      String(label || "preview");
+    const operationId =
+      ++activeOperationId;
+
+    controller.label =
+      String(
+        label || "request"
+      );
+
+    controller.novaOperationId =
+      operationId;
+
+    controller.__novaTimeout =
+      setTimeout(
+        () => {
+          if (
+            activeController !==
+            controller
+          ) {
+            return;
+          }
+
+          try {
+            controller.abort(
+              "request-time-budget"
+            );
+          } catch {}
+
+          activeController =
+            null;
+
+          storageRemove(
+            ACTIVE_PREVIEW_KEY
+          );
+        },
+        previewTimeoutMs
+      );
+
+    activeController =
+      controller;
 
     storageSet(
       ACTIVE_PREVIEW_KEY,
       Date.now()
     );
 
-    return activeController;
+    return controller;
   }
 
-  function endOperation(controller) {
+  function endOperation(
+    controller
+  ) {
     if (
       controller &&
-      activeController === controller
+      activeController ===
+        controller
     ) {
-      activeController = null;
+      try {
+        clearTimeout(
+          controller
+            .__novaTimeout
+        );
+      } catch {}
+
+      activeController =
+        null;
+
       storageRemove(
         ACTIVE_PREVIEW_KEY
       );
     }
   }
 
-  function abortActive(reason = "browser-lifecycle") {
-    if (!activeController) return;
+  function abortActive(
+    reason =
+      "browser-lifecycle"
+  ) {
+    if (!activeController) {
+      return;
+    }
+
+    const controller =
+      activeController;
+
+    activeController =
+      null;
 
     try {
-      activeController.abort(reason);
+      clearTimeout(
+        controller
+          .__novaTimeout
+      );
     } catch {}
 
-    activeController = null;
+    try {
+      controller.abort(
+        reason
+      );
+    } catch {}
 
     storageRemove(
       ACTIVE_PREVIEW_KEY
+    );
+  }
+
+  function activeSignal() {
+    return (
+      activeController
+        ?.signal ||
+      null
+    );
+  }
+
+  function isCurrentOperation(
+    controller
+  ) {
+    return Boolean(
+      controller &&
+      activeController ===
+        controller &&
+      !controller.signal
+        .aborted
     );
   }
 
@@ -588,7 +685,7 @@
 
   globalThis.NovaSparxBrowserGuard =
     Object.freeze({
-      version: "1.1.0",
+      version: "1.3.0",
       status,
       measureMemory,
       assertResponseBudget,
@@ -598,6 +695,8 @@
       beginOperation,
       endOperation,
       abortActive,
+      activeSignal,
+      isCurrentOperation,
       setPressure
     });
 })();
