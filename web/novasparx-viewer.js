@@ -221,6 +221,12 @@ export class NovaSparxViewer {
     this.distance = 2.8;
     this.pointer = null;
     this.frame = 0;
+    this.disposed =
+      false;
+
+    this.loadController =
+      null;
+
     this.textureCache =
       new Map();
 
@@ -256,86 +262,181 @@ export class NovaSparxViewer {
     url,
     fetchOptions
   ) {
-    if (!this.options.fetch) {
+    if (this.disposed) {
       throw new Error(
-        'Fetch is unavailable.'
+        "NovaSparxViewer has been disposed."
       );
     }
 
-    const options =
-      fetchOptions ||
-      this.options
-        .fetchOptions ||
-      {};
+    if (!this.options.fetch) {
+      throw new Error(
+        "Fetch is unavailable."
+      );
+    }
+
+    try {
+      this.loadController
+        ?.abort(
+          "replaced-by-new-viewer-load"
+        );
+    } catch {}
+
+    const controller =
+      new AbortController();
+
+    this.loadController =
+      controller;
+
+    const options = {
+      ...(
+        fetchOptions ||
+        this.options
+          .fetchOptions ||
+        {}
+      )
+    };
+
+    const externalSignal =
+      options.signal ||
+      null;
+
+    const relayAbort =
+      () => {
+        try {
+          controller.abort(
+            externalSignal?.reason ||
+            "viewer-load-cancelled"
+          );
+        } catch {}
+      };
+
+    if (externalSignal?.aborted) {
+      relayAbort();
+    } else {
+      externalSignal
+        ?.addEventListener?.(
+          "abort",
+          relayAbort,
+          {
+            once:
+              true
+          }
+        );
+    }
+
+    options.signal =
+      controller.signal;
+
+    try {
+      abortIfNeeded(
+        controller.signal
+      );
+
+      const response =
+        await this.options.fetch(
+          url,
+          options
+        );
+
+      abortIfNeeded(
+        controller.signal
+      );
+
+      const budget =
+        this.guard
+          ?.assertResponseBudget?.(
+            response,
+            "mesh"
+          );
+
+      if (!response.ok) {
+        let message =
+          `NovaSparx mesh request failed (${response.status}).`;
+
+        try {
+          message =
+            (await response.json())
+              ?.error ||
+            message;
+        } catch {}
+
+        throw new Error(
+          message
+        );
+      }
+
+      const guardState =
+        this.guard
+          ?.status?.() ||
+        {};
+
+      const maxBytes =
+        Number(
+          budget?.limit ||
+          guardState
+            .packageLimitBytes ||
+          24 * 1024 * 1024
+        );
+
+      const buffer =
+        await readResponseBounded(
+          response,
+          maxBytes,
+          controller.signal
+        );
+
+      abortIfNeeded(
+        controller.signal
+      );
+
+      return await this.loadPackage(
+        buffer,
+        {
+          signal:
+            controller.signal
+        }
+      );
+    } finally {
+      externalSignal
+        ?.removeEventListener?.(
+          "abort",
+          relayAbort
+        );
+
+      if (
+        this.loadController ===
+        controller
+      ) {
+        this.loadController =
+          null;
+      }
+    }
+  }
+
+  async loadPackage(
+    buffer,
+    options = {}
+  ) {
+    if (this.disposed) {
+      throw new Error(
+        "NovaSparxViewer has been disposed."
+      );
+    }
 
     const signal =
       options.signal ||
+      this.loadController
+        ?.signal ||
       null;
 
     abortIfNeeded(
       signal
     );
 
-    const response =
-      await this.options.fetch(
-        url,
-        options
+    const parsed =
+      parseNovaMesh(
+        buffer
       );
-
-    const budget =
-      this.guard
-        ?.assertResponseBudget?.(
-          response,
-          'mesh'
-        );
-
-    if (!response.ok) {
-      let message =
-        `NovaSparx mesh request failed (${response.status}).`;
-
-      try {
-        message =
-          (await response.json())
-            ?.error ||
-          message;
-      } catch {}
-
-      throw new Error(
-        message
-      );
-    }
-
-    const guardState =
-      this.guard
-        ?.status?.() ||
-      {};
-
-    const maxBytes =
-      Number(
-        budget?.limit ||
-        guardState
-          .packageLimitBytes ||
-        24 * 1024 * 1024
-      );
-
-    const buffer =
-      await readResponseBounded(
-        response,
-        maxBytes,
-        signal
-      );
-
-    abortIfNeeded(
-      signal
-    );
-
-    return this.loadPackage(
-      buffer
-    );
-  }
-
-  async loadPackage(buffer) {
-    const parsed = parseNovaMesh(buffer);
     this.#clearModel();
     const { header, geometry } = parsed;
 
@@ -392,13 +493,27 @@ export class NovaSparxViewer {
             )
         : [];
 
-    const materials =
-      await Promise.all(
-        materialSources.map(
-          m =>
-            this.#material(m)
-        )
+    let materials;
+
+    try {
+      materials =
+        await Promise.all(
+          materialSources.map(
+            material =>
+              this.#material(
+                material,
+                signal
+              )
+          )
+        );
+
+      abortIfNeeded(
+        signal
       );
+    } catch (error) {
+      g.dispose();
+      throw error;
+    }
 
     if (!materials.length) {
       materials.push(
@@ -487,13 +602,24 @@ export class NovaSparxViewer {
     );
 
     mesh.scale.setScalar(1 / radius);
+    abortIfNeeded(
+      signal
+    );
+
     this.root.add(mesh);
     this.model = mesh;
     this.resetView();
     return header;
   }
 
-  async #material(source) {
+  async #material(
+    source,
+    signal = null
+  ) {
+    abortIfNeeded(
+      signal
+    );
+
     const color = source.baseColor || [1, 1, 1, 1];
     const material = new THREE.MeshStandardMaterial({
       color: new THREE.Color(color[0], color[1], color[2]),
@@ -518,26 +644,74 @@ export class NovaSparxViewer {
       ['opacity', 'alphaMap', source.opacityTexture, THREE.NoColorSpace],
     ];
 
-    await Promise.all(slots.map(async ([mode, property, path, colorSpace]) => {
-      if (
-        !path ||
-        !this.textureModes?.has(mode) ||
-        this.remainingTextureLoads <= 0
-      ) return;
+    try {
+      await Promise.all(
+        slots.map(
+          async (
+            [
+              mode,
+              property,
+              path,
+              colorSpace
+            ]
+          ) => {
+            abortIfNeeded(
+              signal
+            );
 
-      this.remainingTextureLoads--;
+            if (
+              !path ||
+              !this.textureModes
+                ?.has(mode) ||
+              this.remainingTextureLoads <=
+                0
+            ) {
+              return;
+            }
 
-      const texture = await this.#texture(path, colorSpace);
-      if (texture) material[property] = texture;
-    }));
-    material.needsUpdate = true;
-    return material;
+            this.remainingTextureLoads--;
+
+            const texture =
+              await this.#texture(
+                path,
+                colorSpace,
+                signal
+              );
+
+            abortIfNeeded(
+              signal
+            );
+
+            if (texture) {
+              material[property] =
+                texture;
+            }
+          }
+        )
+      );
+
+      abortIfNeeded(
+        signal
+      );
+
+      material.needsUpdate =
+        true;
+
+      return material;
+    } catch (error) {
+      material.dispose();
+      throw error;
+    }
   }
 
   async #texture(
     path,
-    colorSpace
+    colorSpace,
+    signal = null
   ) {
+    abortIfNeeded(
+      signal
+    );
     const cached =
       this.textureCache.get(
         path
@@ -582,9 +756,21 @@ export class NovaSparxViewer {
         await this.options
           .fetch(
             url,
-            this.options
-              .fetchOptions
+            {
+              ...(
+                this.options
+                  .fetchOptions ||
+                {}
+              ),
+              signal:
+                signal ||
+                undefined
+            }
           );
+
+      abortIfNeeded(
+        signal
+      );
 
       this.guard
         ?.assertResponseBudget?.(
@@ -607,12 +793,6 @@ export class NovaSparxViewer {
         guardState.isMobile
           ? 6 * 1024 * 1024
           : 16 * 1024 * 1024;
-
-      const signal =
-        this.options
-          .fetchOptions
-          ?.signal ||
-        null;
 
       const bytes =
         await readResponseBounded(
@@ -712,6 +892,14 @@ export class NovaSparxViewer {
         bitmap?.close?.();
       } catch {}
 
+      if (
+        signal?.aborted ||
+        error?.name ===
+          "AbortError"
+      ) {
+        throw error;
+      }
+
       this.options.onWarning(
         `Texture could not be loaded: ${path}`,
         error
@@ -729,9 +917,19 @@ export class NovaSparxViewer {
   }
 
   requestRender() {
-    if (this.frame) return;
+    if (
+      this.disposed ||
+      this.frame
+    ) {
+      return;
+    }
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
+
+      if (this.disposed) {
+        return;
+      }
+
       const width = Math.max(1, this.canvas.clientWidth || 1);
       const height = Math.max(1, this.canvas.clientHeight || 1);
       this.renderer.setSize(width, height, false);
@@ -749,6 +947,12 @@ export class NovaSparxViewer {
   }
 
   async toPngBlob() {
+    if (this.disposed) {
+      throw new Error(
+        "NovaSparxViewer has been disposed."
+      );
+    }
+
     this.requestRender();
     await new Promise(resolve => requestAnimationFrame(resolve));
     return new Promise((resolve, reject) => this.canvas.toBlob(
@@ -793,6 +997,23 @@ export class NovaSparxViewer {
   }
 
   dispose() {
+    if (this.disposed) {
+      return;
+    }
+
+    this.disposed =
+      true;
+
+    try {
+      this.loadController
+        ?.abort(
+          "viewer-disposed"
+        );
+    } catch {}
+
+    this.loadController =
+      null;
+
     this.resizeObserver?.disconnect();
     if (this.frame) cancelAnimationFrame(this.frame);
     this.#clearModel();
