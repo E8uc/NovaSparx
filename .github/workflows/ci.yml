@@ -50,3 +50,6 @@ jobs:
 
       - name: Run browser memory guard self-test
         run: node web/novasparx-browser-guard.selftest.mjs
+
+      - name: Run browser transport security self-test
+        run: node web/novasparx-browser-transport.selftest.mjs
