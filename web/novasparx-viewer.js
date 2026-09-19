@@ -1,6 +1,173 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js';
 import { parseNovaMesh, recommendedPixelRatio } from './novasparx-format.js';
 
+function abortIfNeeded(
+  signal
+) {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  const error =
+    new Error(
+      'NovaSparx viewer request was cancelled.'
+    );
+
+  error.name =
+    'AbortError';
+
+  throw error;
+}
+
+async function readResponseBounded(
+  response,
+  maxBytes,
+  signal = null
+) {
+  abortIfNeeded(
+    signal
+  );
+
+  maxBytes =
+    Math.max(
+      1,
+      Number(maxBytes) ||
+      1
+    );
+
+  const declared =
+    Number(
+      response.headers.get(
+        'content-length'
+      ) || 0
+    );
+
+  if (
+    declared > 0 &&
+    declared > maxBytes
+  ) {
+    try {
+      await response.body
+        ?.cancel();
+    } catch {}
+
+    throw new Error(
+      'NovaSparx response exceeds the viewer memory budget.'
+    );
+  }
+
+  if (
+    !response.body ||
+    typeof response.body
+      .getReader !==
+      'function'
+  ) {
+    const buffer =
+      await response
+        .arrayBuffer();
+
+    abortIfNeeded(
+      signal
+    );
+
+    if (
+      buffer.byteLength >
+      maxBytes
+    ) {
+      throw new Error(
+        'NovaSparx response exceeds the viewer memory budget.'
+      );
+    }
+
+    return buffer;
+  }
+
+  const reader =
+    response.body
+      .getReader();
+
+  const chunks = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      abortIfNeeded(
+        signal
+      );
+
+      const {
+        done,
+        value
+      } =
+        await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      if (!value?.byteLength) {
+        continue;
+      }
+
+      total +=
+        value.byteLength;
+
+      if (
+        total >
+        maxBytes
+      ) {
+        try {
+          await reader.cancel();
+        } catch {}
+
+        throw new Error(
+          'NovaSparx response exceeds the viewer memory budget.'
+        );
+      }
+
+      chunks.push(
+        value
+      );
+    }
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {}
+
+    throw error;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {}
+  }
+
+  abortIfNeeded(
+    signal
+  );
+
+  const output =
+    new Uint8Array(
+      total
+    );
+
+  let offset = 0;
+
+  for (
+    const chunk of
+    chunks
+  ) {
+    output.set(
+      chunk,
+      offset
+    );
+
+    offset +=
+      chunk.byteLength;
+  }
+
+  return output.buffer;
+}
+
 export class NovaSparxViewer {
   constructor(canvas, options = {}) {
     if (!canvas?.getContext) throw new TypeError('NovaSparxViewer requires a canvas.');
@@ -85,22 +252,86 @@ export class NovaSparxViewer {
     this.requestRender();
   }
 
-  async loadFromUrl(url, fetchOptions) {
-    if (!this.options.fetch) throw new Error('Fetch is unavailable.');
-    const response = await this.options.fetch(url, fetchOptions || this.options.fetchOptions);
+  async loadFromUrl(
+    url,
+    fetchOptions
+  ) {
+    if (!this.options.fetch) {
+      throw new Error(
+        'Fetch is unavailable.'
+      );
+    }
 
-    this.guard
-      ?.assertResponseBudget?.(
-        response,
-        "mesh"
+    const options =
+      fetchOptions ||
+      this.options
+        .fetchOptions ||
+      {};
+
+    const signal =
+      options.signal ||
+      null;
+
+    abortIfNeeded(
+      signal
+    );
+
+    const response =
+      await this.options.fetch(
+        url,
+        options
       );
 
+    const budget =
+      this.guard
+        ?.assertResponseBudget?.(
+          response,
+          'mesh'
+        );
+
     if (!response.ok) {
-      let message = `NovaSparx mesh request failed (${response.status}).`;
-      try { message = (await response.json())?.error || message; } catch {}
-      throw new Error(message);
+      let message =
+        `NovaSparx mesh request failed (${response.status}).`;
+
+      try {
+        message =
+          (await response.json())
+            ?.error ||
+          message;
+      } catch {}
+
+      throw new Error(
+        message
+      );
     }
-    return this.loadPackage(await response.arrayBuffer());
+
+    const guardState =
+      this.guard
+        ?.status?.() ||
+      {};
+
+    const maxBytes =
+      Number(
+        budget?.limit ||
+        guardState
+          .packageLimitBytes ||
+        24 * 1024 * 1024
+      );
+
+    const buffer =
+      await readResponseBounded(
+        response,
+        maxBytes,
+        signal
+      );
+
+    abortIfNeeded(
+      signal
+    );
+
+    return this.loadPackage(
+      buffer
+    );
   }
 
   async loadPackage(buffer) {
@@ -367,13 +598,53 @@ export class NovaSparxViewer {
         );
       }
 
+      const guardState =
+        this.guard
+          ?.status?.() ||
+        {};
+
+      const maxTextureBytes =
+        guardState.isMobile
+          ? 6 * 1024 * 1024
+          : 16 * 1024 * 1024;
+
+      const signal =
+        this.options
+          .fetchOptions
+          ?.signal ||
+        null;
+
+      const bytes =
+        await readResponseBounded(
+          response,
+          maxTextureBytes,
+          signal
+        );
+
+      abortIfNeeded(
+        signal
+      );
+
       const blob =
-        await response.blob();
+        new Blob(
+          [bytes],
+          {
+            type:
+              response.headers.get(
+                'content-type'
+              ) ||
+              'application/octet-stream'
+          }
+        );
 
       bitmap =
         await createImageBitmap(
           blob
         );
+
+      abortIfNeeded(
+        signal
+      );
 
       const texture =
         new THREE.CanvasTexture(
