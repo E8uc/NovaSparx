@@ -45,6 +45,190 @@ public sealed partial class PublicFortniteSources
     public string MappingsCache => Path.Combine(_cacheRoot, "mappings");
     public string TocCache => Path.Combine(_cacheRoot, "uondemandtoc");
 
+    private static readonly long MaxManifestDownloadBytes =
+        ReadByteLimit(
+            "NOVASPARX_MAX_MANIFEST_DOWNLOAD_BYTES",
+            64L * 1024 * 1024,
+            4L * 1024 * 1024,
+            192L * 1024 * 1024);
+
+    private static readonly long MaxMetadataDownloadBytes =
+        ReadByteLimit(
+            "NOVASPARX_MAX_METADATA_DOWNLOAD_BYTES",
+            4L * 1024 * 1024,
+            64L * 1024,
+            32L * 1024 * 1024);
+
+    private static readonly long MaxMappingsDownloadBytes =
+        ReadByteLimit(
+            "NOVASPARX_MAX_MAPPINGS_DOWNLOAD_BYTES",
+            24L * 1024 * 1024,
+            1L * 1024 * 1024,
+            96L * 1024 * 1024);
+
+    private static readonly long MaxMappingsExpandedBytes =
+        ReadByteLimit(
+            "NOVASPARX_MAX_MAPPINGS_EXPANDED_BYTES",
+            48L * 1024 * 1024,
+            2L * 1024 * 1024,
+            160L * 1024 * 1024);
+
+    private static readonly long MaxTocDownloadBytes =
+        ReadByteLimit(
+            "NOVASPARX_MAX_TOC_DOWNLOAD_BYTES",
+            24L * 1024 * 1024,
+            1L * 1024 * 1024,
+            96L * 1024 * 1024);
+
+    private static readonly long MaxAesDownloadBytes =
+        ReadByteLimit(
+            "NOVASPARX_MAX_AES_DOWNLOAD_BYTES",
+            2L * 1024 * 1024,
+            32L * 1024,
+            8L * 1024 * 1024);
+
+    private static long ReadByteLimit(
+        string name,
+        long fallback,
+        long minimum,
+        long maximum)
+    {
+        return long.TryParse(
+                Environment.GetEnvironmentVariable(
+                    name),
+                out var value)
+            ? Math.Clamp(
+                value,
+                minimum,
+                maximum)
+            : fallback;
+    }
+
+    private static async Task<byte[]>
+        ReadStreamBytesBoundedAsync(
+            Stream input,
+            long maxBytes,
+            string label,
+            CancellationToken cancellationToken,
+            int initialCapacity = 0)
+    {
+        using var output =
+            new MemoryStream(
+                Math.Max(
+                    0,
+                    initialCapacity));
+
+        var buffer =
+            new byte[64 * 1024];
+
+        long total = 0;
+
+        while (true)
+        {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
+            var read =
+                await input.ReadAsync(
+                    buffer.AsMemory(
+                        0,
+                        buffer.Length),
+                    cancellationToken);
+
+            if (read <= 0)
+                break;
+
+            total += read;
+
+            if (total > maxBytes)
+            {
+                throw new InvalidDataException(
+                    $"{label} exceeded the configured {maxBytes} byte limit.");
+            }
+
+            await output.WriteAsync(
+                buffer.AsMemory(
+                    0,
+                    read),
+                cancellationToken);
+        }
+
+        if (
+            output.TryGetBuffer(
+                out var segment) &&
+            segment.Offset == 0 &&
+            segment.Array is not null &&
+            segment.Count ==
+                segment.Array.Length)
+        {
+            return segment.Array;
+        }
+
+        return output.ToArray();
+    }
+
+    private static async Task<byte[]>
+        ReadHttpBytesBoundedAsync(
+            HttpResponseMessage response,
+            long maxBytes,
+            string label,
+            CancellationToken cancellationToken)
+    {
+        var declared =
+            response.Content.Headers
+                .ContentLength;
+
+        if (
+            declared is > 0 &&
+            declared.Value > maxBytes)
+        {
+            throw new InvalidDataException(
+                $"{label} declared {declared.Value} bytes, above the configured {maxBytes} byte limit.");
+        }
+
+        await using var input =
+            await response.Content
+                .ReadAsStreamAsync(
+                    cancellationToken);
+
+        var initialCapacity =
+            declared is > 0 &&
+            declared.Value <=
+                int.MaxValue
+                ? checked((int)declared.Value)
+                : 0;
+
+        return await ReadStreamBytesBoundedAsync(
+            input,
+            maxBytes,
+            label,
+            cancellationToken,
+            initialCapacity);
+    }
+
+    private static async Task<byte[]>
+        DecompressGzipBoundedAsync(
+            byte[] compressed,
+            long maxBytes,
+            CancellationToken cancellationToken)
+    {
+        using var input =
+            new MemoryStream(
+                compressed,
+                writable: false);
+
+        using var gzip =
+            new GZipStream(
+                input,
+                CompressionMode.Decompress);
+
+        return await ReadStreamBytesBoundedAsync(
+            gzip,
+            maxBytes,
+            "Mappings decompression",
+            cancellationToken);
+    }
+
     private static string NormalizeHttpEndpoint(
         string? raw,
         string fallback,
@@ -248,13 +432,20 @@ public sealed partial class PublicFortniteSources
         try
         {
             using var response =
-                await _http.GetAsync(endpoint, cancellationToken);
+                await _http.GetAsync(
+                    endpoint,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
 
             if (!response.IsSuccessStatusCode)
                 return null;
 
             var bytes =
-                await response.Content.ReadAsByteArrayAsync(cancellationToken);
+                await ReadHttpBytesBoundedAsync(
+                    response,
+                    MaxManifestDownloadBytes,
+                    "Fortnite Studio manifest source",
+                    cancellationToken);
 
             if (LooksLikeManifest(bytes))
             {
@@ -375,6 +566,10 @@ public sealed partial class PublicFortniteSources
                 : "https://download.epicgames.com/" +
                   tocPath.TrimStart('/');
 
+            url =
+                RequireHttpEndpoint(
+                    url);
+
             var fileName = Path.GetFileName(
                 new Uri(url).AbsolutePath);
 
@@ -386,8 +581,16 @@ public sealed partial class PublicFortniteSources
 
             byte[] bytes;
 
-            if (File.Exists(cachePath) &&
-                new FileInfo(cachePath).Length > 32)
+            var cachedInfo =
+                File.Exists(cachePath)
+                    ? new FileInfo(cachePath)
+                    : null;
+
+            if (
+                cachedInfo is not null &&
+                cachedInfo.Length > 32 &&
+                cachedInfo.Length <=
+                    MaxTocDownloadBytes)
             {
                 bytes =
                     await File.ReadAllBytesAsync(
@@ -396,9 +599,36 @@ public sealed partial class PublicFortniteSources
             }
             else
             {
-                bytes =
-                    await _http.GetByteArrayAsync(
+                if (
+                    cachedInfo is not null &&
+                    cachedInfo.Length >
+                        MaxTocDownloadBytes)
+                {
+                    try
+                    {
+                        File.Delete(
+                            cachePath);
+                    }
+                    catch
+                    {
+                        // A stale oversized cache entry is ignored.
+                    }
+                }
+
+                using var response =
+                    await _http.GetAsync(
                         url,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                    return null;
+
+                bytes =
+                    await ReadHttpBytesBoundedAsync(
+                        response,
+                        MaxTocDownloadBytes,
+                        "Texture-streaming IoStore TOC",
                         cancellationToken);
 
                 if (bytes.Length < 32)
@@ -466,12 +696,18 @@ public sealed partial class PublicFortniteSources
         }
 
         using var response =
-            await _http.GetAsync(url, cancellationToken);
+            await _http.GetAsync(
+                url,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
 
         response.EnsureSuccessStatusCode();
 
         var bytes =
-            await response.Content.ReadAsByteArrayAsync(
+            await ReadHttpBytesBoundedAsync(
+                response,
+                MaxManifestDownloadBytes,
+                "Fortnite manifest source",
                 cancellationToken);
 
         if (LooksLikeManifest(bytes))
@@ -717,9 +953,14 @@ public sealed partial class PublicFortniteSources
         {
             try
             {
+                var safeEndpoint =
+                    RequireHttpEndpoint(
+                        endpoint);
+
                 using var response =
                     await _http.GetAsync(
-                        endpoint,
+                        safeEndpoint,
+                        HttpCompletionOption.ResponseHeadersRead,
                         cancellationToken);
 
                 if (!response.IsSuccessStatusCode)
@@ -727,9 +968,11 @@ public sealed partial class PublicFortniteSources
 
                 using var doc =
                     JsonDocument.Parse(
-                        await response.Content
-                            .ReadAsByteArrayAsync(
-                                cancellationToken));
+                        await ReadHttpBytesBoundedAsync(
+                            response,
+                            MaxMetadataDownloadBytes,
+                            "Mappings metadata source",
+                            cancellationToken));
 
                 var urls =
                     FindUrls(doc.RootElement)
@@ -798,9 +1041,19 @@ public sealed partial class PublicFortniteSources
             RequireHttpEndpoint(
                 url);
 
-        var bytes =
-            await _http.GetByteArrayAsync(
+        using var response =
+            await _http.GetAsync(
                 url,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+
+        response.EnsureSuccessStatusCode();
+
+        var bytes =
+            await ReadHttpBytesBoundedAsync(
+                response,
+                MaxMappingsDownloadBytes,
+                "Mappings file",
                 cancellationToken);
 
         if (bytes.Length < 32)
@@ -808,22 +1061,11 @@ public sealed partial class PublicFortniteSources
 
         if (IsGzip(bytes))
         {
-            using var input =
-                new MemoryStream(bytes);
-
-            using var gzip =
-                new GZipStream(
-                    input,
-                    CompressionMode.Decompress);
-
-            using var output =
-                new MemoryStream();
-
-            await gzip.CopyToAsync(
-                output,
-                cancellationToken);
-
-            bytes = output.ToArray();
+            bytes =
+                await DecompressGzipBoundedAsync(
+                    bytes,
+                    MaxMappingsExpandedBytes,
+                    cancellationToken);
         }
 
         // Keep the adapter deterministic: do not save a compressed .zst blob as .usmap.
@@ -860,22 +1102,26 @@ public sealed partial class PublicFortniteSources
             CancellationToken cancellationToken)
     {
         var endpoint =
-            Environment.GetEnvironmentVariable(
-                "NOVASPARX_AES_API") ??
-            "https://api.fortniteapi.com/v1/aes";
+            RequireHttpEndpoint(
+                Environment.GetEnvironmentVariable(
+                    "NOVASPARX_AES_API") ??
+                "https://api.fortniteapi.com/v1/aes");
 
         using var response =
             await _http.GetAsync(
                 endpoint,
+                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
         response.EnsureSuccessStatusCode();
 
         using var doc =
             JsonDocument.Parse(
-                await response.Content
-                    .ReadAsByteArrayAsync(
-                        cancellationToken));
+                await ReadHttpBytesBoundedAsync(
+                    response,
+                    MaxAesDownloadBytes,
+                    "AES source",
+                    cancellationToken));
 
         var result =
             new Dictionary<FGuid, FAesKey>();
