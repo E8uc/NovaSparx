@@ -60,6 +60,22 @@ public sealed class NovaRequestDispatcher
         path =
             NormalizeRoute(path);
 
+        // Enforce the hosted-service boundary for HTTP AND NovaLink. This must
+        // run before loading assets, acquiring heavy gates, or fetching keys /
+        // manifests. No environment toggle can accidentally restore server work.
+        if (path is "/v1/warmup" or "/v1/refresh" or "/v1/resolve" or
+            "/v1/preview" or "/v1/client-mesh" or "/v1/inspect" or
+            "/v1/references" or "/v1/texture")
+        {
+            return Json(410, new
+            {
+                state = "unavailable",
+                code = "CLIENT_PROCESSING_REQUIRED",
+                error = "Asset parsing and decoding are unavailable on the metadata-only service. A verified browser pipeline is required.",
+                serverHeavyProcessing = false
+            });
+        }
+
         try
         {
             return (method, path) switch
@@ -250,10 +266,11 @@ public sealed class NovaRequestDispatcher
                 _meshes.CacheEntries,
             textureCacheEntries =
                 _textures.CacheEntries,
+            serverHeavyProcessing = false,
             universalMeshPreview =
-                true,
+                false,
             universalPreviewPlan =
-                true,
+                false,
             clientRendered3d =
                 true,
             clientMeshBinary =
@@ -263,9 +280,9 @@ public sealed class NovaRequestDispatcher
             assetRegistryReferencerIndex =
                 "offline-sharded-v1",
             staticMesh =
-                true,
+                false,
             skeletalMesh =
-                true,
+                false,
             inspector =
                 "universal-uobject-metadata-v1"
         };

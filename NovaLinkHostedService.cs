@@ -8,7 +8,7 @@ namespace NovaSparx.Backend;
 /// Persistent reverse WebSocket client used by NovaSparx AutoLink.
 ///
 /// NovaSparx connects OUT to the stable Cloudflare endpoint, so Back4App does
-/// not need a stable inbound hostname for FNAA to reach heavy asset parsing.
+/// does not need a stable inbound hostname for lightweight metadata requests.
 ///
 /// Environment:
 ///   NOVASPARX_LINK_URL   = wss://.../connect
@@ -35,13 +35,13 @@ namespace NovaSparx.Backend;
 public sealed class NovaLinkHostedService : BackgroundService
 {
     private const int ChunkSize =
-        512 * 1024;
+        10 * 1024;
 
     private const int MaxResponseBytes =
-        64 * 1024 * 1024;
+        10 * 1024;
 
     private const int MaxControlMessageBytes =
-        256 * 1024;
+        10 * 1024;
 
     private static readonly int MaxQueuedRequests =
         int.TryParse(

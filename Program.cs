@@ -53,8 +53,8 @@ builder.Services
 builder.Services
     .AddSingleton<NovaRequestDispatcher>();
 
-builder.Services
-    .AddHostedService<NovaWarmupHostedService>();
+// The hosted service is metadata-only. Asset warmup/parsing belongs to browser
+// workers or offline indexing tools, never to the Back4App process.
 
 builder.Services
     .AddHostedService<NovaLinkHostedService>();
@@ -68,7 +68,7 @@ builder.WebHost
 
             options.Limits
                     .MaxRequestBodySize =
-                64 * 1024;
+                10 * 1024;
 
             options.Limits
                     .MaxRequestLineSize =
@@ -417,12 +417,13 @@ app.MapGet(
                         .BackendVersion,
                 schema =
                     "novasparx.preview.v1",
+                serverHeavyProcessing = false,
                 universalAssetInspection =
-                    true,
+                    false,
                 staticMeshPreview =
-                    true,
+                    false,
                 skeletalMeshPreview =
-                    true,
+                    false,
                 clientRendered3d =
                     true,
                 clientMeshBinary =
