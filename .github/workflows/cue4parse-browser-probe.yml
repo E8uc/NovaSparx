@@ -6,6 +6,10 @@ on:
     paths:
       - "tools/CUE4Parse.BrowserProbe/**"
       - ".github/workflows/cue4parse-browser-probe.yml"
+  pull_request:
+    paths:
+      - "tools/CUE4Parse.BrowserProbe/**"
+      - ".github/workflows/cue4parse-browser-probe.yml"
   workflow_dispatch:
 
 permissions:
@@ -34,6 +38,15 @@ jobs:
       - name: Publish CUE4Parse browser probe
         run: dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release --no-restore
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install actual browser runtime
+        run: |
+          npm install --no-save --package-lock=false playwright@1.62.1
+          npx playwright install --with-deps chromium
+
       - name: Verify and execute browser bundle
         shell: bash
         run: |
@@ -54,10 +67,13 @@ jobs:
           echo "Browser probe WASM: $wasm_file"
 
           cp tools/CUE4Parse.BrowserProbe/main.js "$bundle/main.js"
-          printf '{"type":"module"}\n' > "$bundle/package.json"
 
-          probe_log="$RUNNER_TEMP/cue4parse-browser-wasm.log"
-          node "$bundle/main.js" 2>&1 | tee "$probe_log"
-          grep -Fq "CUE4PARSE_BROWSER_WASM_OK" "$probe_log"
 
-          echo "CUE4Parse browser-WASM runtime probe succeeded: $bundle"
+          node tools/CUE4Parse.BrowserProbe/runtime.test.mjs "$bundle"
+
+      - name: Preserve runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cue4parse-browser-runtime
+          path: browser-runtime-proof.json
