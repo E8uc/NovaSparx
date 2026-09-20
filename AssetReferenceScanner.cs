@@ -106,6 +106,8 @@ public static partial class AssetReferenceScanner
         facts["propertyCount"] =
             value.Properties.Count;
 
+        facts["exportType"] = AssetTypeEvidence.Of(value);
+
         facts["runtimeType"] =
             value.GetType().Name;
 

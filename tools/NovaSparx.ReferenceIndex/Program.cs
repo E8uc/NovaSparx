@@ -311,10 +311,10 @@ static bool IsMeshClass(
     classes is not null &&
     classes.Any(
         value =>
-            value.Contains(
+            value.Equals(
                 "StaticMesh",
                 StringComparison.OrdinalIgnoreCase) ||
-            value.Contains(
+            value.Equals(
                 "SkeletalMesh",
                 StringComparison.OrdinalIgnoreCase));
 
@@ -323,9 +323,9 @@ static bool IsBlueprintClass(
     classes is not null &&
     classes.Any(
         value =>
-            value.Contains(
-                "Blueprint",
-                StringComparison.OrdinalIgnoreCase));
+            new[] { "Blueprint", "BlueprintGeneratedClass", "WidgetBlueprint",
+                    "WidgetBlueprintGeneratedClass", "AnimBlueprint", "AnimBlueprintGeneratedClass" }
+                .Contains(value, StringComparer.OrdinalIgnoreCase));
 
 var nodes =
     registry

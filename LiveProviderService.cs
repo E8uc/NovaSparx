@@ -745,7 +745,7 @@ public sealed class LiveProviderService : IDisposable
                 "unknown";
 
             string assetType =
-                FriendlyAssetType(
+                AssetTypeEvidence.Of(
                     loaded.Object);
 
             if (loaded.Object is UUnrealMaterial unrealMaterial)
@@ -1502,24 +1502,6 @@ public sealed class LiveProviderService : IDisposable
             2 => "partial",
             1 => "low",
             _ => "unknown"
-        };
-    }
-
-    private static string FriendlyAssetType(
-        UObject value)
-    {
-        return value switch
-        {
-            UStaticMesh => "StaticMesh",
-            UMaterialInstanceConstant => "MaterialInstanceConstant",
-            UMaterialInstance => "MaterialInstance",
-            UMaterial => "Material",
-            UMaterialInterface => "MaterialInterface",
-            UUnrealMaterial => "Material",
-            _ => value.GetType().Name.StartsWith(
-                    'U')
-                ? value.GetType().Name[1..]
-                : value.GetType().Name
         };
     }
 

@@ -111,7 +111,7 @@ public sealed class AssetInspectorService
             "unknown";
 
         var assetType =
-            FriendlyAssetType(
+            AssetTypeEvidence.Of(
                 value);
 
         if (value is UUnrealMaterial unrealMaterial)
@@ -259,49 +259,22 @@ public sealed class AssetInspectorService
                 "imported-reference-pose";
         }
 
-        var runtime =
-            value.GetType().Name;
-
-        if (runtime.Contains(
-                "Niagara",
-                StringComparison.OrdinalIgnoreCase))
+        var metadataFamily = assetType switch
         {
-            facts["metadataFamily"] =
-                "Niagara";
-
-            facts["visualPreviewPolicy"] =
-                "metadata-only-until-deterministic-vfx-renderer";
-        }
-        else if (
-            runtime.Contains(
-                "Blueprint",
-                StringComparison.OrdinalIgnoreCase) ||
-            runtime.Contains(
-                "GeneratedClass",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            facts["metadataFamily"] =
-                "Blueprint";
-        }
-        else if (
-            runtime.Contains(
-                "Anim",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            facts["metadataFamily"] =
-                "Animation";
-        }
-        else if (
-            runtime.Contains(
-                "Sound",
-                StringComparison.OrdinalIgnoreCase) ||
-            runtime.Contains(
-                "Audio",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            facts["metadataFamily"] =
-                "Audio";
-        }
+            "NiagaraSystem" or "NiagaraEmitter" or "ParticleSystem" => "Niagara",
+            "Blueprint" or "BlueprintGeneratedClass" or "WidgetBlueprint" or
+                "WidgetBlueprintGeneratedClass" or "AnimBlueprint" or
+                "AnimBlueprintGeneratedClass" => "Blueprint",
+            "AnimSequence" or "AnimSequenceBase" or "AnimMontage" or "AnimComposite" or
+                "AnimationAsset" or "BlendSpace" or "BlendSpace1D" or "PoseAsset" => "Animation",
+            "SoundWave" or "SoundCue" or "SoundWaveProcedural" or
+                "MetaSound" or "MetaSoundSource" or "MetaSoundPatch" => "Audio",
+            _ => null
+        };
+        if (metadataFamily is not null)
+            facts["metadataFamily"] = metadataFamily;
+        if (metadataFamily == "Niagara")
+            facts["visualPreviewPolicy"] = "metadata-only-until-deterministic-vfx-renderer";
 
         var health =
             _provider.Health();
@@ -345,45 +318,4 @@ public sealed class AssetInspectorService
                 facts);
     }
 
-    private static string FriendlyAssetType(
-        UObject value)
-    {
-        return value switch
-        {
-            UStaticMesh =>
-                "StaticMesh",
-
-            USkeletalMesh =>
-                "SkeletalMesh",
-
-            UMaterialInstanceConstant =>
-                "MaterialInstanceConstant",
-
-            UMaterialInstance =>
-                "MaterialInstance",
-
-            UMaterial =>
-                "Material",
-
-            UMaterialInterface =>
-                "MaterialInterface",
-
-            UUnrealMaterial =>
-                "Material",
-
-            _ =>
-                TrimLeadingU(
-                    value.GetType().Name)
-        };
-    }
-
-    private static string TrimLeadingU(
-        string value)
-    {
-        return value.Length > 1 &&
-               value[0] == 'U' &&
-               char.IsUpper(value[1])
-            ? value[1..]
-            : value;
-    }
 }
