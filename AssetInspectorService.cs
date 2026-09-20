@@ -259,12 +259,11 @@ public sealed class AssetInspectorService
                 "imported-reference-pose";
         }
 
-        var runtime =
-            value.GetType().Name;
-
-        if (runtime.Contains(
-                "Niagara",
-                StringComparison.OrdinalIgnoreCase))
+        if (AssetTypeIs(
+                assetType,
+                "NiagaraSystem",
+                "NiagaraEmitter",
+                "ParticleSystem"))
         {
             facts["metadataFamily"] =
                 "Niagara";
@@ -273,31 +272,47 @@ public sealed class AssetInspectorService
                 "metadata-only-until-deterministic-vfx-renderer";
         }
         else if (
-            runtime.Contains(
+            AssetTypeIs(
+                assetType,
                 "Blueprint",
-                StringComparison.OrdinalIgnoreCase) ||
-            runtime.Contains(
-                "GeneratedClass",
-                StringComparison.OrdinalIgnoreCase))
+                "BlueprintGeneratedClass",
+                "WidgetBlueprint",
+                "WidgetBlueprintGeneratedClass",
+                "AnimBlueprint",
+                "AnimBlueprintGeneratedClass",
+                "ControlRigBlueprint",
+                "ControlRigBlueprintGeneratedClass"))
         {
             facts["metadataFamily"] =
                 "Blueprint";
         }
         else if (
-            runtime.Contains(
-                "Anim",
-                StringComparison.OrdinalIgnoreCase))
+            AssetTypeIs(
+                assetType,
+                "AnimSequence",
+                "AnimSequenceBase",
+                "AnimMontage",
+                "AnimComposite",
+                "AnimationAsset",
+                "BlendSpace",
+                "BlendSpace1D",
+                "AimOffsetBlendSpace",
+                "AimOffsetBlendSpace1D",
+                "PoseAsset",
+                "LevelSequence"))
         {
             facts["metadataFamily"] =
                 "Animation";
         }
         else if (
-            runtime.Contains(
-                "Sound",
-                StringComparison.OrdinalIgnoreCase) ||
-            runtime.Contains(
-                "Audio",
-                StringComparison.OrdinalIgnoreCase))
+            AssetTypeIs(
+                assetType,
+                "SoundWave",
+                "SoundCue",
+                "SoundWaveProcedural",
+                "MetaSound",
+                "MetaSoundSource",
+                "MetaSoundPatch"))
         {
             facts["metadataFamily"] =
                 "Audio";
@@ -348,38 +363,63 @@ public sealed class AssetInspectorService
     private static string FriendlyAssetType(
         UObject value)
     {
-        return value switch
+        // CUE4Parse ExportType is the Unreal class name when Class is known,
+        // and only falls back to the CLR runtime type when class metadata is
+        // unavailable. Prefer it so FNAA receives the same class evidence that
+        // CUE4Parse/FModel use instead of a potentially misleading wrapper type.
+        var exportType =
+            value.ExportType;
+
+        if (!string.IsNullOrWhiteSpace(
+                exportType))
         {
-            UStaticMesh =>
-                "StaticMesh",
+            return NormalizeClassName(
+                exportType);
+        }
 
-            USkeletalMesh =>
-                "SkeletalMesh",
-
-            UMaterialInstanceConstant =>
-                "MaterialInstanceConstant",
-
-            UMaterialInstance =>
-                "MaterialInstance",
-
-            UMaterial =>
-                "Material",
-
-            UMaterialInterface =>
-                "MaterialInterface",
-
-            UUnrealMaterial =>
-                "Material",
-
-            _ =>
-                TrimLeadingU(
-                    value.GetType().Name)
-        };
+        return NormalizeClassName(
+            value.GetType().Name);
     }
 
-    private static string TrimLeadingU(
+    private static bool AssetTypeIs(
+        string value,
+        params string[] expected)
+    {
+        foreach (var candidate in expected)
+        {
+            if (value.Equals(
+                    candidate,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string NormalizeClassName(
         string value)
     {
+        value =
+            value.Trim()
+                .Trim('\'', '"');
+
+        var separator =
+            Math.Max(
+                value.LastIndexOf('/'),
+                value.LastIndexOf('.'));
+
+        if (
+            separator >= 0 &&
+            separator + 1 <
+                value.Length)
+        {
+            value =
+                value[
+                    (separator + 1)..];
+        }
+
         return value.Length > 1 &&
                value[0] == 'U' &&
                char.IsUpper(value[1])
