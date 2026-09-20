@@ -40,25 +40,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          publish_root="tools/CUE4Parse.BrowserProbe/bin/Release/net10.0/publish"
-          test -d "$publish_root"
+          output_root="tools/CUE4Parse.BrowserProbe/bin/Release/net10.0"
+          test -d "$output_root"
 
-          main_js="$(find "$publish_root" -type f -name main.js -print -quit)"
-          test -n "$main_js"
+          dotnet_js="$(find "$output_root" -type f -path '*/_framework/dotnet.js' -print -quit)"
+          test -n "$dotnet_js"
 
-          bundle="$(dirname "$main_js")"
+          framework_dir="$(dirname "$dotnet_js")"
+          bundle="$(dirname "$framework_dir")"
           echo "Browser probe bundle: $bundle"
 
-          test -f "$bundle/_framework/dotnet.js"
-
-          wasm_file="$(find "$bundle" -type f -name '*.wasm' -print -quit)"
+          wasm_file="$(find "$framework_dir" -type f -name '*.wasm' -print -quit)"
           test -n "$wasm_file"
           echo "Browser probe WASM: $wasm_file"
 
+          cp tools/CUE4Parse.BrowserProbe/main.js "$bundle/main.js"
           printf '{"type":"module"}\n' > "$bundle/package.json"
 
           probe_log="$RUNNER_TEMP/cue4parse-browser-wasm.log"
-          node "$main_js" 2>&1 | tee "$probe_log"
+          node "$bundle/main.js" 2>&1 | tee "$probe_log"
           grep -Fq "CUE4PARSE_BROWSER_WASM_OK" "$probe_log"
 
           echo "CUE4Parse browser-WASM runtime probe succeeded: $bundle"
