@@ -15,6 +15,13 @@ if (!OperatingSystem.IsBrowser())
     return 2;
 }
 
+if (args.Contains("--reject-partial-block"))
+{
+    // Assert this failure at the real JS/WASM boundary, in a fresh browser run.
+    BrowserAesEcb.Decrypt(new byte[16], 0, 15, new byte[32]);
+    return 3;
+}
+
 Console.WriteLine(typeof(IoStoreReader).Assembly.FullName);
 Console.WriteLine(typeof(IoStoreReader).FullName);
 Console.WriteLine(typeof(FIoStoreTocResource).FullName);
@@ -63,14 +70,6 @@ using (var cancelled = new CancellationTokenSource())
     try { BrowserAesEcb.Decrypt(cipher, 0, 16, aesKey, cancelled.Token); throw new InvalidOperationException("AES ignored cancellation"); }
     catch (OperationCanceledException) { }
 }
-var rejectedPartialBlock = false;
-try { BrowserAesEcb.Decrypt(cipher, 0, 15, aesKey); }
-catch (Exception error)
-{
-    rejectedPartialBlock = error.Message.Contains("Require complete ECB blocks");
-    Console.WriteLine($"MANAGED_AES_REJECTED_PARTIAL_BLOCK {error.GetType().FullName}");
-}
-if (!rejectedPartialBlock) throw new InvalidOperationException("AES accepted an incomplete block");
 Console.WriteLine("CUE4PARSE_STAGE|managed-aes-256-ecb|supported");
 
 Console.WriteLine("CUE4PARSE_ASSET_PARSING_UNPROVEN");

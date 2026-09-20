@@ -45,6 +45,14 @@ try {
   assert.ok(result.wasmResources.length > 0, 'No WASM fetched by browser');
   assert.equal(result.assetParsingProven, false, 'A runtime smoke test cannot prove real asset parsing');
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
+  await page.goto(`http://127.0.0.1:${server.address().port}/?test=reject-partial-block`);
+  await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
+  const rejection = await page.evaluate(() => globalThis.cue4parseProbe);
+  assert.equal(rejection.state, 'failed');
+  assert.match(rejection.error || '', /Require complete ECB blocks/);
+  assert.match(rejection.error || '', /count=15/);
+  result.partialBlockRejectionProven = true;
+  console.log('AES_PARTIAL_BLOCK_REJECTED_AT_BROWSER_BOUNDARY');
 } finally {
   fs.writeFileSync('browser-runtime-proof.json', JSON.stringify({result, logs, wasmBytes}, null, 2));
   await browser?.close();
