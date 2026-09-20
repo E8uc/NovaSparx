@@ -306,26 +306,93 @@ var classByPackage =
                         StringComparer.OrdinalIgnoreCase),
             StringComparer.OrdinalIgnoreCase);
 
+static string ClassLeaf(
+    string value)
+{
+    value =
+        (value ?? string.Empty)
+            .Trim()
+            .Trim('\'', '"');
+
+    var separator =
+        Math.Max(
+            value.LastIndexOf('/'),
+            value.LastIndexOf('.'));
+
+    if (
+        separator >= 0 &&
+        separator + 1 <
+            value.Length)
+    {
+        value =
+            value[
+                (separator + 1)..];
+    }
+
+    if (
+        value.Length > 1 &&
+        value[0] == 'U' &&
+        char.IsUpper(value[1]))
+    {
+        value =
+            value[1..];
+    }
+
+    return value;
+}
+
 static bool IsMeshClass(
     IReadOnlyCollection<string>? classes) =>
     classes is not null &&
     classes.Any(
         value =>
-            value.Contains(
-                "StaticMesh",
-                StringComparison.OrdinalIgnoreCase) ||
-            value.Contains(
-                "SkeletalMesh",
-                StringComparison.OrdinalIgnoreCase));
+        {
+            var type =
+                ClassLeaf(value);
+
+            return
+                type.Equals(
+                    "StaticMesh",
+                    StringComparison.OrdinalIgnoreCase) ||
+                type.Equals(
+                    "SkeletalMesh",
+                    StringComparison.OrdinalIgnoreCase);
+        });
 
 static bool IsBlueprintClass(
     IReadOnlyCollection<string>? classes) =>
     classes is not null &&
     classes.Any(
         value =>
-            value.Contains(
-                "Blueprint",
-                StringComparison.OrdinalIgnoreCase));
+        {
+            var type =
+                ClassLeaf(value);
+
+            return type.Equals(
+                       "Blueprint",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   type.Equals(
+                       "WidgetBlueprint",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   type.Equals(
+                       "AnimBlueprint",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   type.Equals(
+                       "ControlRigBlueprint",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   type.Equals(
+                       "BlueprintGeneratedClass",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   type.Equals(
+                       "WidgetBlueprintGeneratedClass",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   type.Equals(
+                       "AnimBlueprintGeneratedClass",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   type.Equals(
+                       "ControlRigBlueprintGeneratedClass",
+                       StringComparison.OrdinalIgnoreCase);
+        });
 
 var nodes =
     registry
