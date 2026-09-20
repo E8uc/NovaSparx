@@ -13,7 +13,7 @@ internal static class BrowserAesEcb
         ArgumentNullException.ThrowIfNull(key);
         if (key.Length != 32) throw new ArgumentException("AES-256 requires 32 key bytes");
         if (offset < 0 || count < 0 || offset > bytes.Length - count || count % 16 != 0 || count > 4 * 1024 * 1024)
-            throw new ArgumentOutOfRangeException(nameof(count), "Require complete ECB blocks within the 4 MiB budget");
+            throw new ArgumentOutOfRangeException(nameof(count), $"Require complete ECB blocks within the 4 MiB budget (offset={offset}, count={count}, length={bytes.Length})");
         cancellationToken.ThrowIfCancellationRequested();
         var output = new byte[count];
         var engine = new AesEngine();
