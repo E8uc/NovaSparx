@@ -36,7 +36,7 @@ jobs:
         with:
           repository: FabianFG/CUE4Parse
           ref: cfff57a0483501e0fa555dff5bf542748afe0bab
-          path: upstream-cue4parse
+          path: tools/upstream-cue4parse
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           args=()
           if [[ "$PROBE_SOURCE" == "master" ]]; then
-            args+=("-p:CUE4ParseSourceProject=$GITHUB_WORKSPACE/upstream-cue4parse/CUE4Parse/CUE4Parse.csproj" "-p:CUE4PARSE_SKIP_NATIVE=true")
+            args+=("-p:CUE4ParseSourceProject=$GITHUB_WORKSPACE/tools/upstream-cue4parse/CUE4Parse/CUE4Parse.csproj" "-p:CUE4PARSE_SKIP_NATIVE=true")
           fi
           dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release "${args[@]}"
 
