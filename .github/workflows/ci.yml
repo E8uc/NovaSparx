@@ -36,7 +36,22 @@ jobs:
         run: |
           set -euo pipefail
           dotnet workload install wasm-tools
-          dotnet build tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release
+
+          probe_out="$RUNNER_TEMP/cue4parse-browser-probe"
+          probe_log="$RUNNER_TEMP/cue4parse-browser-probe.log"
+          rm -rf "$probe_out"
+
+          dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj             --configuration Release             --output "$probe_out"
+
+          main_js="$(find "$probe_out" -type f -name main.js -print -quit)"
+          test -n "$main_js"
+
+          framework_dir="$(dirname "$main_js")/_framework"
+          test -f "$framework_dir/dotnet.js"
+          test -n "$(find "$framework_dir" -maxdepth 1 -type f -name '*.wasm' -print -quit)"
+
+          node "$main_js" | tee "$probe_log"
+          grep -Fq "CUE4PARSE_BROWSER_WASM_OK" "$probe_log"
 
       - name: Check shell startup script
         run: bash -n start.sh
