@@ -18,11 +18,23 @@ permissions:
 jobs:
   browser-wasm:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [release, master]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check out verified current CUE4Parse master
+        if: matrix.source == 'master'
+        uses: actions/checkout@v4
+        with:
+          repository: FabianFG/CUE4Parse
+          ref: cfff57a0483501e0fa555dff5bf542748afe0bab
+          path: upstream-cue4parse
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -32,11 +44,18 @@ jobs:
       - name: Install browser WASM workload
         run: dotnet workload install wasm-tools
 
-      - name: Restore browser probe
-        run: dotnet restore tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj
+      - name: Publish isolated browser probe
+        shell: bash
+        env:
+          PROBE_SOURCE: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$PROBE_SOURCE" == "master" ]]; then
+            args+=("-p:CUE4ParseSourceProject=$GITHUB_WORKSPACE/upstream-cue4parse/CUE4Parse/CUE4Parse.csproj" "-p:CUE4PARSE_SKIP_NATIVE=true")
+          fi
+          dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release "${args[@]}"
 
-      - name: Publish CUE4Parse browser probe
-        run: dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release --no-restore
 
       - uses: actions/setup-node@v4
         with:
@@ -75,5 +94,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cue4parse-browser-runtime
+          name: cue4parse-browser-runtime-${{ matrix.source }}
           path: browser-runtime-proof.json
