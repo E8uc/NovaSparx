@@ -10,4 +10,4 @@ Based only on main `3ed95eb752ceebb9482abe3d931fa42e9b71423d`.
 
 No parser, preview, renderer, audio, UEFN, dependency-version or automatic database update is implemented here. See the companion Fortnite-agent DIAGNOSIS_REVIEW.md for cross-repository findings, corpus and validation.
 
-Local JavaScript syntax, JSON, browser format, memory and transport/security self-tests pass. Local .NET compilation could not run because SDK download was blocked by network policy. Existing pull-request CI must compile both backend and reference-index tool before merge. No full live end-to-end certification is claimed.
+Local JavaScript syntax, JSON, browser format, memory and transport/security self-tests pass. Local .NET compilation could not run because SDK download was blocked by network policy. Pull-request CI subsequently passed on 20 September, including backend and reference-index builds: https://github.com/E8uc/NovaSparx/actions/runs/35496139793 . Companion Chromium card/tag/button integration also passed: https://github.com/E8uc/Fortnite-agent/actions/runs/35496127661 . No full live end-to-end certification is claimed.
