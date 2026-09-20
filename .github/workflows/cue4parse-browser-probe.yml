@@ -42,14 +42,19 @@ jobs:
 
           bundle="$(find tools/CUE4Parse.BrowserProbe/bin/Release -type d -name AppBundle -print -quit)"
           test -n "$bundle"
+          echo "Browser probe bundle: $bundle"
+
           test -f "$bundle/_framework/dotnet.js"
           test -f "$bundle/main.js"
-          test -n "$(find "$bundle/_framework" -maxdepth 1 -type f -name '*.wasm' -print -quit)"
+
+          wasm_file="$(find "$bundle" -type f -name '*.wasm' -print -quit)"
+          test -n "$wasm_file"
+          echo "Browser probe WASM: $wasm_file"
 
           printf '{"type":"module"}\n' > "$bundle/package.json"
 
           probe_log="$RUNNER_TEMP/cue4parse-browser-wasm.log"
-          node "$bundle/main.js" | tee "$probe_log"
+          node "$bundle/main.js" 2>&1 | tee "$probe_log"
           grep -Fq "CUE4PARSE_BROWSER_WASM_OK" "$probe_log"
 
           echo "CUE4Parse browser-WASM runtime probe succeeded: $bundle"
