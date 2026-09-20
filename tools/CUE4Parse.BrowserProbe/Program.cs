@@ -49,26 +49,28 @@ Probe("zlib", () =>
 // This stage is required, not merely reported. A bad adapter must fail CI.
 var cipher = Convert.FromHexString("8EA2B7CA516745BFEAFC49904B496089");
 var aesKey = Convert.FromHexString("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
-Console.WriteLine($"MANAGED_AES_VECTOR length={cipher.Length}");
 var plain = BrowserAesEcb.Decrypt(cipher, 0, cipher.Length, aesKey);
 if (Convert.ToHexString(plain) != "00112233445566778899AABBCCDDEEFF")
     throw new InvalidOperationException("Managed browser AES vector mismatch");
-Console.WriteLine("MANAGED_AES_VECTOR_OK");
 // Verify offset handling, immutable input, cancellation and alignment rejection.
 var padded = new byte[48];
 cipher.CopyTo(padded, 16);
 if (!BrowserAesEcb.Decrypt(padded, 16, 16, aesKey).SequenceEqual(plain) || !padded.Skip(16).Take(16).SequenceEqual(cipher))
     throw new InvalidOperationException("Managed AES range/input preservation failed");
-Console.WriteLine("MANAGED_AES_OFFSET_OK");
 using (var cancelled = new CancellationTokenSource())
 {
     cancelled.Cancel();
     try { BrowserAesEcb.Decrypt(cipher, 0, 16, aesKey, cancelled.Token); throw new InvalidOperationException("AES ignored cancellation"); }
     catch (OperationCanceledException) { }
 }
-Console.WriteLine("MANAGED_AES_CANCEL_OK");
-try { BrowserAesEcb.Decrypt(cipher, 0, 15, aesKey); throw new InvalidOperationException("AES accepted an incomplete block"); }
-catch (ArgumentOutOfRangeException) { }
+var rejectedPartialBlock = false;
+try { BrowserAesEcb.Decrypt(cipher, 0, 15, aesKey); }
+catch (Exception error)
+{
+    rejectedPartialBlock = error.Message.Contains("Require complete ECB blocks");
+    Console.WriteLine($"MANAGED_AES_REJECTED_PARTIAL_BLOCK {error.GetType().FullName}");
+}
+if (!rejectedPartialBlock) throw new InvalidOperationException("AES accepted an incomplete block");
 Console.WriteLine("CUE4PARSE_STAGE|managed-aes-256-ecb|supported");
 
 Console.WriteLine("CUE4PARSE_ASSET_PARSING_UNPROVEN");
