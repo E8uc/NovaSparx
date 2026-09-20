@@ -72,6 +72,27 @@ using (var cancelled = new CancellationTokenSource())
 }
 Console.WriteLine("CUE4PARSE_STAGE|managed-aes-256-ecb|supported");
 
+using (var fixtureStream = typeof(BrowserAesEcb).Assembly.GetManifestResourceStream("real-utoc-fixture.json")
+    ?? throw new InvalidOperationException("Real TOC fixture was not generated"))
+using (var fixture = JsonDocument.Parse(fixtureStream))
+{
+    var root = fixture.RootElement;
+    var bytes = Convert.FromBase64String(root.GetProperty("headerBase64").GetString()!);
+    if (bytes.Length != 144 || Convert.ToHexString(SHA256.HashData(bytes)) != root.GetProperty("sha256").GetString())
+        throw new InvalidOperationException("Real TOC bytes/hash disagree with desktop fixture");
+    using var archive = new FByteArchive(root.GetProperty("logicalPath").GetString()!, bytes);
+    var header = new FIoStoreTocHeader(archive);
+    var expected = root.GetProperty("expected");
+    if ((byte)header.Version != expected.GetProperty("version").GetByte() ||
+        header.TocHeaderSize != expected.GetProperty("headerSize").GetUInt32() ||
+        header.TocEntryCount != expected.GetProperty("entries").GetUInt32() ||
+        header.TocCompressedBlockEntryCount != expected.GetProperty("compressionBlocks").GetUInt32() ||
+        header.CompressionBlockSize != expected.GetProperty("compressionBlockSize").GetUInt32() ||
+        header.DirectoryIndexSize != expected.GetProperty("directoryIndexSize").GetUInt32())
+        throw new InvalidOperationException("Browser TOC fields disagree with desktop CUE4Parse");
+    Console.WriteLine($"CUE4PARSE_STAGE|real-utoc-header|supported|{root.GetProperty("logicalPath").GetString()}|{root.GetProperty("sha256").GetString()}");
+}
+
 Console.WriteLine("CUE4PARSE_ASSET_PARSING_UNPROVEN");
 Console.WriteLine("CUE4PARSE_BROWSER_WASM_OK");
 

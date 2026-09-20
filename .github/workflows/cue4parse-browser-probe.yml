@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "tools/CUE4Parse.BrowserProbe/**"
+      - "tools/NovaSparx.BrowserFixture/**"
       - ".github/workflows/cue4parse-browser-probe.yml"
   pull_request:
     paths:
       - "tools/CUE4Parse.BrowserProbe/**"
+      - "tools/NovaSparx.BrowserFixture/**"
       - ".github/workflows/cue4parse-browser-probe.yml"
   workflow_dispatch:
 
@@ -43,6 +45,9 @@ jobs:
 
       - name: Install browser WASM workload
         run: dotnet workload install wasm-tools
+
+      - name: Prepare real bounded TOC fixture using desktop CUE4Parse
+        run: dotnet run --project tools/NovaSparx.BrowserFixture/NovaSparx.BrowserFixture.csproj --configuration Release -- tools/CUE4Parse.BrowserProbe/fixture.json
 
       - name: Publish isolated browser probe
         shell: bash
@@ -95,4 +100,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cue4parse-browser-runtime-${{ matrix.source }}
-          path: browser-runtime-proof.json
+          path: |
+            browser-runtime-proof.json
+            tools/CUE4Parse.BrowserProbe/fixture.json

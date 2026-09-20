@@ -1240,7 +1240,7 @@ public sealed partial class PublicFortniteSources
             RequireHttpEndpoint(
                 Environment.GetEnvironmentVariable(
                     "NOVASPARX_AES_API") ??
-                "https://api.fortniteapi.com/v1/aes");
+                "https://export-service-new.dillyapis.com/v1/aes");
 
         using var response =
             await _http.GetAsync(

@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="fixture.json" LogicalName="real-utoc-fixture.json" Condition="Exists('fixture.json')" />
     <PackageReference Include="CUE4Parse" Version="1.2.2.202609" Condition="'$(CUE4ParseSourceProject)' == ''" />
     <ProjectReference Include="$(CUE4ParseSourceProject)" Condition="'$(CUE4ParseSourceProject)' != ''" />
     <PackageReference Include="Microsoft.Bcl.Memory" Version="9.0.14" />
