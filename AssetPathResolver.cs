@@ -50,7 +50,7 @@ public static partial class AssetPathResolver
                     segment is "." or "..");
     }
     [GeneratedRegex(
-        @"^(?:StaticMesh|SkeletalMesh|Texture2D|Texture|Material|MaterialInstanceConstant|MaterialInstance|Object|BlueprintGeneratedClass|Blueprint|WidgetBlueprint|AnimBlueprint|NiagaraSystem|NiagaraEmitter|SoundCue|SoundWave|World|LevelSequence)?'(.+)'$",
+        @"^(?:(?:/Script/[^.'""\s]+\.)?[A-Za-z0-9_]+)?['""]([^'""]+)['""]$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ClassWrapper();
 
