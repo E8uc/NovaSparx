@@ -20,7 +20,7 @@ var headerBytes = new byte[144];
 await stream.ReadExactlyAsync(headerBytes, timeout.Token);
 using var archive = new FByteArchive(file.FileName, headerBytes);
 var header = new FIoStoreTocHeader(archive);
-if (!keys.TryGetValue(header.EncryptionKeyGuid, out var key))
+if (!keys.Any(pair => pair.Key == header.EncryptionKeyGuid))
     throw new InvalidOperationException($"No current AES key for TOC GUID {header.EncryptionKeyGuid}");
 var output = new
 {
