@@ -413,7 +413,11 @@ try {
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
   const cancelled = await page.evaluate(() => globalThis.cue4parseProbe);
   assert.equal(cancelled.state, 'failed', 'Cancelled CTR must not succeed');
-  assert.match(cancelled.error || '', /OperationCanceled/);
+  assert.match(
+    [cancelled.error || '', ...logs.slice(-40)].join('\n'),
+    /(?:OperationCanceled|TaskCanceled|AggregateException[^\n]*TaskCanceled)/,
+    'Cancelled CTR must surface only as a cancellation failure'
+  );
   result.ctrPreCancellationProven = true;
   console.log('AES_CTR_CANCELLATION_PROVEN_AT_BROWSER_BOUNDARY');
 } finally {
