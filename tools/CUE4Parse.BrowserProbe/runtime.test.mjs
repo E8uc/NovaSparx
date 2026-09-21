@@ -797,6 +797,448 @@ try {
     );
   }
 
+  if (process.env.REQUIRE_GENERIC_TEXTURE === '1') {
+    const fixturePath =
+      path.resolve(
+        'tools/CUE4Parse.BrowserProbe/texture-fixture.json'
+      );
+
+    assert.ok(
+      fs.existsSync(fixturePath),
+      'Generic Texture proof requires the generated desktop fixture'
+    );
+
+    const fixtureDocument =
+      JSON.parse(
+        fs.readFileSync(
+          fixturePath,
+          'utf8'
+        )
+      );
+
+    const target =
+      fixtureDocument?.selected?.[0];
+
+    assert.ok(
+      target?.path &&
+      target?.containerToc &&
+      target?.pixelsSha256 &&
+      target?.width > 0 &&
+      target?.height > 0,
+      'Generic Texture reference is missing path/container/pixel evidence'
+    );
+
+    const live =
+      await (
+        liveManifestPromise ||=
+          resolveRawManifest(
+            LIVE_MANIFEST_ENDPOINT
+          )
+      );
+
+    const relayBeforeGeneric = {
+      requests:
+        relayRequests,
+      bytes:
+        relayBytes
+    };
+
+    const generic =
+      await page.evaluate(
+        async ({
+          assetPath,
+          containerToc,
+          expectedWidth,
+          expectedHeight,
+          maxSize,
+          manifestUrl,
+          chunkBase
+        }) => {
+          return await new Promise(
+            (resolve, reject) => {
+              const params =
+                new URLSearchParams({
+                  test:
+                    'resolve-texture-relay',
+                  path:
+                    assetPath,
+                  toc:
+                    containerToc,
+                  manifest:
+                    manifestUrl,
+                  chunkBase,
+                  mappingsApi:
+                    'https://api.fortniteapi.com/v1/mappings',
+                  aesApi:
+                    'https://export-service-new.dillyapis.com/v1/aes',
+                  maxSize:
+                    String(maxSize),
+                  relay:
+                    '/edge/range'
+                });
+
+              const worker =
+                new Worker(
+                  '/worker.js?' +
+                    params.toString(),
+                  {
+                    type:
+                      'module'
+                  }
+                );
+
+              const timeout =
+                setTimeout(
+                  () => {
+                    worker.terminate();
+                    reject(
+                      new Error(
+                        'Generic Texture worker timed out'
+                      )
+                    );
+                  },
+                  300000
+                );
+
+              const fail =
+                error => {
+                  clearTimeout(
+                    timeout
+                  );
+                  worker.terminate();
+                  reject(
+                    error instanceof
+                      Error
+                      ? error
+                      : new Error(
+                          String(
+                            error
+                          )
+                        )
+                  );
+                };
+
+              let pixelsResult =
+                null;
+
+              worker.onerror =
+                event => {
+                  fail(
+                    new Error(
+                      event.message ||
+                      'Generic Texture worker failed'
+                    )
+                  );
+                };
+
+              worker.onmessage =
+                event => {
+                  const message =
+                    event.data ||
+                    {};
+
+                  if (
+                    message.type ===
+                    'error'
+                  ) {
+                    fail(
+                      new Error(
+                        message.error ||
+                        'Generic Texture worker failed'
+                      )
+                    );
+                    return;
+                  }
+
+                  if (
+                    message.type ===
+                    'pixels'
+                  ) {
+                    try {
+                      const {
+                        path:
+                          returnedPath,
+                        width,
+                        height,
+                        pixels
+                      } =
+                        message;
+
+                      if (
+                        !(
+                          pixels instanceof
+                          ArrayBuffer
+                        )
+                      ) {
+                        throw new Error(
+                          'Generic Texture worker did not transfer an ArrayBuffer'
+                        );
+                      }
+
+                      if (
+                        width <= 0 ||
+                        height <= 0 ||
+                        width >
+                          2048 ||
+                        height >
+                          2048 ||
+                        pixels.byteLength !==
+                          width *
+                            height *
+                            4
+                      ) {
+                        throw new Error(
+                          'Generic Texture worker returned invalid RGBA pixels'
+                        );
+                      }
+
+                      if (
+                        width !==
+                          expectedWidth ||
+                        height !==
+                          expectedHeight
+                      ) {
+                        throw new Error(
+                          'Generic Texture runtime selected a different preview mip'
+                        );
+                      }
+
+                      pixelsResult = {
+                        path:
+                          returnedPath,
+                        width,
+                        height,
+                        pixels
+                      };
+                    } catch (
+                      error
+                    ) {
+                      fail(error);
+                    }
+
+                    return;
+                  }
+
+                  if (
+                    message.type ===
+                    'done'
+                  ) {
+                    (async () => {
+                      try {
+                        if (
+                          message.exitCode !==
+                          0
+                        ) {
+                          throw new Error(
+                            `Generic Texture worker exited with ${message.exitCode}`
+                          );
+                        }
+
+                        if (
+                          !pixelsResult
+                        ) {
+                          throw new Error(
+                            'Generic Texture worker completed without pixels'
+                          );
+                        }
+
+                        const hash =
+                          await crypto.subtle
+                            .digest(
+                              'SHA-256',
+                              pixelsResult
+                                .pixels
+                            );
+
+                        const pixelsSha256 =
+                          Array.from(
+                            new Uint8Array(
+                              hash
+                            ),
+                            value =>
+                              value
+                                .toString(
+                                  16
+                                )
+                                .padStart(
+                                  2,
+                                  '0'
+                                )
+                          )
+                            .join('')
+                            .toUpperCase();
+
+                        const canvas =
+                          document
+                            .createElement(
+                              'canvas'
+                            );
+
+                        canvas.id =
+                          'generic-texture-0';
+
+                        canvas.width =
+                          pixelsResult
+                            .width;
+
+                        canvas.height =
+                          pixelsResult
+                            .height;
+
+                        canvas
+                          .getContext(
+                            '2d'
+                          )
+                          .putImageData(
+                            new ImageData(
+                              new Uint8ClampedArray(
+                                pixelsResult
+                                  .pixels
+                              ),
+                              pixelsResult
+                                .width,
+                              pixelsResult
+                                .height
+                            ),
+                            0,
+                            0
+                          );
+
+                        document.body
+                          .append(
+                            canvas
+                          );
+
+                        clearTimeout(
+                          timeout
+                        );
+
+                        worker
+                          .terminate();
+
+                        resolve({
+                          path:
+                            pixelsResult
+                              .path,
+                          width:
+                            pixelsResult
+                              .width,
+                          height:
+                            pixelsResult
+                              .height,
+                          pixelsSha256
+                        });
+                      } catch (
+                        error
+                      ) {
+                        fail(error);
+                      }
+                    })();
+                  }
+                };
+            }
+          );
+        },
+        {
+          assetPath:
+            target.path,
+          containerToc:
+            target.containerToc,
+          expectedWidth:
+            target.width,
+          expectedHeight:
+            target.height,
+          maxSize:
+            Math.max(
+              target.width,
+              target.height
+            ),
+          manifestUrl:
+            live.source,
+          chunkBase:
+            LIVE_CHUNK_BASE
+              .toString()
+        }
+      );
+
+    assert.equal(
+      generic.path
+        .toLowerCase(),
+      target.path
+        .toLowerCase(),
+      'Generic Texture runtime returned a different asset path'
+    );
+
+    assert.equal(
+      generic.width,
+      target.width
+    );
+
+    assert.equal(
+      generic.height,
+      target.height
+    );
+
+    assert.equal(
+      generic.pixelsSha256,
+      target.pixelsSha256,
+      'Generic live Texture runtime pixels differ from desktop CUE4Parse'
+    );
+
+    const genericRelayNetwork = {
+      requests:
+        relayRequests -
+        relayBeforeGeneric
+          .requests,
+      bytes:
+        relayBytes -
+        relayBeforeGeneric
+          .bytes
+    };
+
+    assert.ok(
+      genericRelayNetwork
+        .requests >
+        0,
+      'Generic Texture runtime never used the bounded range relay'
+    );
+
+    assert.ok(
+      genericRelayNetwork
+        .bytes >
+        0,
+      'Generic Texture runtime transferred no relay bytes'
+    );
+
+    await page
+      .locator(
+        '#generic-texture-0'
+      )
+      .screenshot({
+        path:
+          'generic-texture-0.png'
+      });
+
+    result.genericTextureParsingProven =
+      true;
+
+    result.genericTextureFixture =
+      generic;
+
+    result.genericTextureNetwork =
+      genericRelayNetwork;
+
+    console.log(
+      'GENERIC_TEXTURE_WORKER_PROVEN',
+      JSON.stringify({
+        fixture:
+          generic,
+        network:
+          genericRelayNetwork
+      })
+    );
+  }
+
   if (process.env.REQUIRE_PUBLIC_SOURCE_CORS === '1') {
     const live = await (liveManifestPromise ||= resolveRawManifest(LIVE_MANIFEST_ENDPOINT));
     assert.ok(liveChunkPaths.length > 0, 'No live BuildPatch chunk path was observed for CORS proof');

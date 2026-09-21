@@ -79,6 +79,7 @@ jobs:
           REQUIRE_LIVE_BUILD_PATCH: "1"
           REQUIRE_LIVE_TEXTURE: "1"
           REQUIRE_RELAY_TEXTURE: "1"
+          REQUIRE_GENERIC_TEXTURE: "1"
           REQUIRE_PUBLIC_SOURCE_CORS: "1"
         shell: bash
         run: |
@@ -114,5 +115,6 @@ jobs:
             worker-texture-*.png
             live-texture-*.png
             relay-texture-*.png
+            generic-texture-*.png
             tools/CUE4Parse.BrowserProbe/texture-fixture.json
             tools/CUE4Parse.BrowserProbe/fixture.json

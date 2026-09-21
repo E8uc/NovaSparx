@@ -16,6 +16,112 @@ if (!OperatingSystem.IsBrowser())
     return 2;
 }
 
+var texturePathArgument = args.FirstOrDefault(
+    argument => argument.StartsWith(
+        "--resolve-texture-path=",
+        StringComparison.Ordinal));
+
+if (texturePathArgument is not null)
+{
+    static string RequiredArgument(
+        string[] arguments,
+        string prefix)
+    {
+        var value =
+            arguments.FirstOrDefault(
+                argument =>
+                    argument.StartsWith(
+                        prefix,
+                        StringComparison.Ordinal));
+
+        if (value is null)
+        {
+            throw new ArgumentException(
+                $"Missing required browser Texture runtime argument: {prefix}");
+        }
+
+        var result =
+            value[
+                prefix.Length..];
+
+        if (string.IsNullOrWhiteSpace(
+                result))
+        {
+            throw new ArgumentException(
+                $"Browser Texture runtime argument is empty: {prefix}");
+        }
+
+        return result;
+    }
+
+    var assetPath =
+        texturePathArgument[
+            "--resolve-texture-path=".Length..];
+
+    var containerToc =
+        RequiredArgument(
+            args,
+            "--resolve-texture-toc=");
+
+    var manifestUrl =
+        RequiredArgument(
+            args,
+            "--resolve-texture-manifest-url=");
+
+    var chunkBaseUrl =
+        RequiredArgument(
+            args,
+            "--resolve-texture-chunk-base=");
+
+    var mappingsApiUrl =
+        RequiredArgument(
+            args,
+            "--resolve-texture-mappings-api=");
+
+    var aesApiUrl =
+        RequiredArgument(
+            args,
+            "--resolve-texture-aes-api=");
+
+    var maxSizeArgument =
+        args.FirstOrDefault(
+            argument =>
+                argument.StartsWith(
+                    "--resolve-texture-max-size=",
+                    StringComparison.Ordinal));
+
+    var maxPreviewSize =
+        1024;
+
+    if (
+        maxSizeArgument is not null &&
+        !int.TryParse(
+            maxSizeArgument[
+                "--resolve-texture-max-size=".Length..],
+            out maxPreviewSize))
+    {
+        throw new ArgumentException(
+            "Invalid browser Texture max preview size.");
+    }
+
+    using var timeout =
+        new CancellationTokenSource(
+            TimeSpan.FromSeconds(
+                300));
+
+    await BrowserTextureRuntime.RunAsync(
+        assetPath,
+        containerToc,
+        manifestUrl,
+        chunkBaseUrl,
+        mappingsApiUrl,
+        aesApiUrl,
+        maxPreviewSize,
+        timeout.Token);
+
+    return 0;
+}
+
 var liveTextureArgument = args.FirstOrDefault(
     argument => argument.StartsWith(
         "--live-texture-base=",
