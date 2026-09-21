@@ -561,6 +561,78 @@ try {
     const live = await (liveManifestPromise ||= resolveRawManifest(LIVE_MANIFEST_ENDPOINT));
     assert.ok(liveChunkPaths.length > 0, 'No live BuildPatch chunk path was observed for CORS proof');
 
+    const nodeRangeProbe = async (url, label) => {
+      const response = await fetch(url, {
+        method: 'GET',
+        redirect: 'error',
+        headers: {
+          range: 'bytes=0-255',
+          accept: 'application/octet-stream,*/*;q=0.8'
+        }
+      });
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return {
+        label,
+        status: response.status,
+        bytes: bytes.byteLength,
+        contentRange: response.headers.get('content-range'),
+        contentLength: response.headers.get('content-length')
+      };
+    };
+
+    const mappingsMetadataForRange = await fetch(
+      'https://api.fortniteapi.com/v1/mappings',
+      { headers: { accept: 'application/json' } }
+    ).then(response => {
+      if (!response.ok) throw new Error(`Mappings metadata range preflight returned HTTP ${response.status}`);
+      return response.json();
+    });
+
+    const findMappingUrlForRange = root => {
+      let found = '';
+      const walk = value => {
+        if (found) return;
+        if (typeof value === 'string') {
+          if (/^https:\/\//i.test(value) && /usmap/i.test(value)) found = value;
+          return;
+        }
+        if (Array.isArray(value)) {
+          for (const item of value) walk(item);
+          return;
+        }
+        if (value && typeof value === 'object') {
+          for (const item of Object.values(value)) walk(item);
+        }
+      };
+      walk(root);
+      return found;
+    };
+
+    const mappingUrlForRange = findMappingUrlForRange(mappingsMetadataForRange);
+    assert.ok(mappingUrlForRange, 'Mappings metadata exposed no HTTPS usmap URL for origin range proof');
+
+    const originRanges = {
+      rawManifest: await nodeRangeProbe(live.source, 'Raw Fortnite manifest'),
+      mappingsFile: await nodeRangeProbe(mappingUrlForRange, 'Fortnite mappings file'),
+      buildPatchChunk: await nodeRangeProbe(
+        new URL(liveChunkPaths[0], LIVE_CHUNK_BASE).toString(),
+        'Epic BuildPatch chunk'
+      )
+    };
+
+    result.publicSourceOriginRanges = originRanges;
+    console.log('PUBLIC_SOURCE_ORIGIN_RANGE_MATRIX', JSON.stringify(originRanges));
+
+    for (const item of Object.values(originRanges)) {
+      assert.equal(item.status, 206, `${item.label} must support bounded HTTP range reads`);
+      assert.ok(item.bytes > 0 && item.bytes <= 256, `${item.label} range body exceeded probe budget`);
+      assert.match(
+        item.contentRange || '',
+        /^bytes\s+0-\d+\/\d+$/i,
+        `${item.label} omitted a usable Content-Range`
+      );
+    }
+
     const cors = await page.evaluate(async ({ rawManifestUrl, chunkUrl }) => {
       const settle = async (label, task) => {
         try {
