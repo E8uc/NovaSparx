@@ -1,0 +1,26 @@
+name: Real Texture package reference
+on:
+  pull_request:
+    paths: ['tools/NovaSparx.TextureFixture/**', '.github/workflows/texture-package-probe.yml']
+  push:
+    branches: [main]
+    paths: ['tools/NovaSparx.TextureFixture/**', '.github/workflows/texture-package-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  texture-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Extract bounded real Texture package reference
+        run: dotnet run --project tools/NovaSparx.TextureFixture/NovaSparx.TextureFixture.csproj --configuration Release -- texture-package-fixture.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: texture-package-reference
+          path: texture-package-fixture.json
