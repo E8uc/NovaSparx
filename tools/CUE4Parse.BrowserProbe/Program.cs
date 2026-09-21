@@ -16,6 +16,27 @@ if (!OperatingSystem.IsBrowser())
     return 2;
 }
 
+var liveBuildPatchArgument = args.FirstOrDefault(
+    argument => argument.StartsWith(
+        "--live-buildpatch-base=",
+        StringComparison.Ordinal));
+
+if (liveBuildPatchArgument is not null)
+{
+    var baseUrl = liveBuildPatchArgument[
+        "--live-buildpatch-base=".Length..];
+
+    using var timeout =
+        new CancellationTokenSource(
+            TimeSpan.FromSeconds(110));
+
+    await LiveBuildPatchProbe.RunAsync(
+        baseUrl,
+        timeout.Token);
+
+    return 0;
+}
+
 if (args.Contains("--reject-partial-block"))
 {
     // Assert this failure at the real JS/WASM boundary, in a fresh browser run.
