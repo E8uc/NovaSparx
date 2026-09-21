@@ -41,6 +41,37 @@ var mappingBytes = await File.ReadAllBytesAsync(Path.Combine(sources.MappingsCac
 if (mappingBytes.Length > 24 * 1024 * 1024) throw new InvalidDataException("Mappings exceed fixture budget");
 var global = (IoStoreReader)provider.GetArchive("global.utoc");
 var scripts = global.Read(new FIoChunkId(0, 0, EIoChunkType5.ScriptObjects));
+
+long ioStorePackageCount = 0;
+var ioStoreContainers =
+    new HashSet<string>(
+        StringComparer.OrdinalIgnoreCase);
+
+foreach (var candidate in provider.Files.Values)
+{
+    if (
+        candidate is FIoStoreEntry ioEntry &&
+        candidate.Path.EndsWith(
+            ".uasset",
+            StringComparison.OrdinalIgnoreCase))
+    {
+        ioStorePackageCount++;
+        ioStoreContainers.Add(
+            ioEntry.IoStoreReader.Path
+                .Replace('\\', '/'));
+    }
+}
+
+Console.WriteLine(
+    $"IOSTORE_LOCATION_INDEX_SOURCE|packages={ioStorePackageCount}|containers={ioStoreContainers.Count}");
+
+if (ioStorePackageCount < 1 ||
+    ioStoreContainers.Count < 1)
+{
+    throw new InvalidDataException(
+        "Mounted provider exposed no IoStore package locations.");
+}
+
 TextureDecoder.UseAssetRipperTextureDecoder = true;
 var failures = new List<object>();
 var selected = new List<object>();
