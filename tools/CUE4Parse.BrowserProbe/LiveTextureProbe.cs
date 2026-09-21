@@ -778,8 +778,24 @@ internal static class LiveTextureProbe
         int beginOffset,
         int count,
         bool isIndex,
+        IAesVfsReader reader)
+    {
+        return BrowserIoStoreDecrypt(
+            bytes,
+            beginOffset,
+            count,
+            isIndex,
+            reader,
+            null);
+    }
+
+    private static byte[] BrowserIoStoreDecrypt(
+        byte[] bytes,
+        int beginOffset,
+        int count,
+        bool isIndex,
         IAesVfsReader reader,
-        object? customData = null)
+        object? customData)
     {
         ArgumentNullException
             .ThrowIfNull(
