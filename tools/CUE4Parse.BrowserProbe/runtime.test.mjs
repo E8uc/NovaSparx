@@ -400,6 +400,161 @@ try {
     console.log('LIVE_BUILDPATCH_WORKER_PROVEN', JSON.stringify(result.liveBuildPatchNetwork));
   }
 
+  if (process.env.REQUIRE_LIVE_TEXTURE === '1') {
+    assert.ok(
+      Array.isArray(result.textureFixtures) && result.textureFixtures.length === 3,
+      'Live Texture proof requires the established three desktop/browser references'
+    );
+
+    const networkBeforeLiveTexture = {
+      manifestRequests: liveManifestRequests,
+      chunkRequests: liveChunkRequests,
+      chunkBytes: liveChunkBytes
+    };
+
+    const liveTextures = await page.evaluate(async () => {
+      return await new Promise((resolve, reject) => {
+        const worker = new Worker('/worker.js?test=live-texture', { type: 'module' });
+        const pending = [];
+        const rows = [];
+        const timeout = setTimeout(() => {
+          worker.terminate();
+          reject(new Error('Live Texture worker proof timed out'));
+        }, 300000);
+
+        const fail = error => {
+          clearTimeout(timeout);
+          worker.terminate();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+
+        worker.onerror = event => {
+          fail(new Error(event.message || 'Live Texture worker failed'));
+        };
+
+        worker.onmessage = event => {
+          const message = event.data || {};
+
+          if (message.type === 'error') {
+            fail(new Error(message.error || 'Live Texture worker failed'));
+            return;
+          }
+
+          if (message.type === 'pixels') {
+            const task = (async () => {
+              const { path, width, height, pixels } = message;
+
+              if (!(pixels instanceof ArrayBuffer)) {
+                throw new Error('Live Texture worker did not transfer an ArrayBuffer');
+              }
+
+              if (
+                width <= 0 ||
+                height <= 0 ||
+                width * height > 65536 ||
+                pixels.byteLength !== width * height * 4
+              ) {
+                throw new Error('Live Texture worker returned an invalid RGBA payload');
+              }
+
+              const hash = await crypto.subtle.digest('SHA-256', pixels);
+              const pixelsSha256 = Array.from(
+                new Uint8Array(hash),
+                value => value.toString(16).padStart(2, '0')
+              ).join('').toUpperCase();
+
+              const canvas = document.createElement('canvas');
+              canvas.id = `live-texture-${rows.length}`;
+              canvas.width = width;
+              canvas.height = height;
+              canvas.getContext('2d').putImageData(
+                new ImageData(new Uint8ClampedArray(pixels), width, height),
+                0,
+                0
+              );
+              document.body.append(canvas);
+
+              rows.push({ path, width, height, pixelsSha256 });
+            })();
+
+            pending.push(task);
+            return;
+          }
+
+          if (message.type === 'done') {
+            (async () => {
+              try {
+                await Promise.all(pending);
+                if (message.exitCode !== 0) {
+                  throw new Error(`Live Texture worker exited with ${message.exitCode}`);
+                }
+                clearTimeout(timeout);
+                worker.terminate();
+                resolve(rows);
+              } catch (error) {
+                fail(error);
+              }
+            })();
+          }
+        };
+      });
+    });
+
+    assert.equal(liveTextures.length, 3, 'Live Worker must render all three exact Texture targets');
+    assert.equal(new Set(liveTextures.map(item => item.path)).size, 3, 'Live Worker must not substitute duplicate Texture targets');
+
+    const expectedLiveByPath = new Map(
+      result.textureFixtures.map(item => [item.path, item])
+    );
+
+    for (const [index, item] of liveTextures.entries()) {
+      const expected = expectedLiveByPath.get(item.path);
+      assert.ok(expected, `Unexpected live Texture path: ${item.path}`);
+      assert.equal(item.width, expected.width);
+      assert.equal(item.height, expected.height);
+      assert.equal(
+        item.pixelsSha256,
+        expected.pixelsSha256,
+        'Live BuildPatch pixels must match the desktop and captured browser reference'
+      );
+      await page.locator(`#live-texture-${index}`).screenshot({
+        path: `live-texture-${index}.png`
+      });
+    }
+
+    assert.ok(
+      liveManifestRequests > networkBeforeLiveTexture.manifestRequests,
+      'Live Texture Worker did not fetch a current Fortnite manifest'
+    );
+    assert.ok(
+      liveChunkRequests > networkBeforeLiveTexture.chunkRequests,
+      'Live Texture Worker did not fetch current BuildPatch chunks'
+    );
+    assert.ok(
+      liveChunkBytes > networkBeforeLiveTexture.chunkBytes,
+      'Live Texture Worker fetched no additional BuildPatch bytes'
+    );
+
+    result.liveTextureFixtures = liveTextures;
+    result.liveTextureParsingProven = true;
+    result.liveTextureNetwork = {
+      manifestRequests:
+        liveManifestRequests - networkBeforeLiveTexture.manifestRequests,
+      chunkRequests:
+        liveChunkRequests - networkBeforeLiveTexture.chunkRequests,
+      chunkBytes:
+        liveChunkBytes - networkBeforeLiveTexture.chunkBytes
+    };
+
+    console.log(
+      'LIVE_TEXTURE_WORKER_PROVEN',
+      JSON.stringify({
+        fixtures: liveTextures,
+        network: result.liveTextureNetwork
+      })
+    );
+  }
+
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=reject-partial-block`);
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
