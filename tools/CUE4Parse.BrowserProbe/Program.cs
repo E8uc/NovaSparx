@@ -16,6 +16,27 @@ if (!OperatingSystem.IsBrowser())
     return 2;
 }
 
+var liveTextureArgument = args.FirstOrDefault(
+    argument => argument.StartsWith(
+        "--live-texture-base=",
+        StringComparison.Ordinal));
+
+if (liveTextureArgument is not null)
+{
+    var baseUrl = liveTextureArgument[
+        "--live-texture-base=".Length..];
+
+    using var timeout =
+        new CancellationTokenSource(
+            TimeSpan.FromSeconds(210));
+
+    await LiveTextureProbe.RunAsync(
+        baseUrl,
+        timeout.Token);
+
+    return 0;
+}
+
 var liveBuildPatchArgument = args.FirstOrDefault(
     argument => argument.StartsWith(
         "--live-buildpatch-base=",
