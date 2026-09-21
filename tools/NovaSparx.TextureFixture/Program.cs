@@ -41,6 +41,37 @@ var mappingBytes = await File.ReadAllBytesAsync(Path.Combine(sources.MappingsCac
 if (mappingBytes.Length > 24 * 1024 * 1024) throw new InvalidDataException("Mappings exceed fixture budget");
 var global = (IoStoreReader)provider.GetArchive("global.utoc");
 var scripts = global.Read(new FIoChunkId(0, 0, EIoChunkType5.ScriptObjects));
+
+long ioStorePackageCount = 0;
+var ioStoreContainers =
+    new HashSet<string>(
+        StringComparer.OrdinalIgnoreCase);
+
+foreach (var candidate in provider.Files.Values)
+{
+    if (
+        candidate is FIoStoreEntry ioEntry &&
+        candidate.Path.EndsWith(
+            ".uasset",
+            StringComparison.OrdinalIgnoreCase))
+    {
+        ioStorePackageCount++;
+        ioStoreContainers.Add(
+            ioEntry.IoStoreReader.Path
+                .Replace('\\', '/'));
+    }
+}
+
+Console.WriteLine(
+    $"IOSTORE_LOCATION_INDEX_SOURCE|packages={ioStorePackageCount}|containers={ioStoreContainers.Count}");
+
+if (ioStorePackageCount < 1 ||
+    ioStoreContainers.Count < 1)
+{
+    throw new InvalidDataException(
+        "Mounted provider exposed no IoStore package locations.");
+}
+
 TextureDecoder.UseAssetRipperTextureDecoder = true;
 var failures = new List<object>();
 var selected = new List<object>();
@@ -67,11 +98,29 @@ foreach (var file in provider.Files.Values.Where(f => f.Path.EndsWith(".uasset",
         if (file.Size + (uexp?.Size ?? 0) + ubulks.Sum(f => f.Size) + uptnls.Sum(f => f.Size) > 8 * 1024 * 1024)
             throw new InvalidDataException("Package payloads exceed 8 MiB");
         var parts = provider.SavePackage(file).Select(p => new { path = p.Key, bytesBase64 = Convert.ToBase64String(p.Value), sha256 = Hash(p.Value) }).ToArray();
-        selected.Add(new { path = file.Path, rootClass = texture.GetType().Name, objectName = texture.Name, mipIndex,
-            width = decoded.Width, height = decoded.Height, format = texture.Format.ToString(),
-            mipSha256 = Hash(mip.BulkData.Data), pixelsSha256 = Hash(decoded.Data), parts,
-            rgbaBase64 = Convert.ToBase64String(decoded.Data) });
-        Console.WriteLine($"REAL_TEXTURE_REFERENCE path={file.Path} class={texture.GetType().Name} mip={mipIndex} size={decoded.Width}x{decoded.Height} format={texture.Format} pixels={Hash(decoded.Data)}");
+        if (file is not FIoStoreEntry ioEntry)
+            throw new InvalidDataException("Texture package is not backed by an IoStore entry");
+        var containerReader = ioEntry.IoStoreReader;
+        selected.Add(new
+        {
+            path = file.Path,
+            rootClass = texture.GetType().Name,
+            objectName = texture.Name,
+            mipIndex,
+            width = decoded.Width,
+            height = decoded.Height,
+            format = texture.Format.ToString(),
+            mipSha256 = Hash(mip.BulkData.Data),
+            pixelsSha256 = Hash(decoded.Data),
+            containerToc = containerReader.Name,
+            containerPath = containerReader.Path.Replace('\\', '/'),
+            containerId = containerReader.TocResource.Header.ContainerId.ToString(),
+            chunkId = ioEntry.ChunkId.ToString(),
+            parts,
+            rgbaBase64 = Convert.ToBase64String(decoded.Data)
+        });
+        Console.WriteLine(
+            $"REAL_TEXTURE_REFERENCE path={file.Path} container={containerReader.Name} chunk={ioEntry.ChunkId} class={texture.GetType().Name} mip={mipIndex} size={decoded.Width}x{decoded.Height} format={texture.Format} pixels={Hash(decoded.Data)}");
     }
     catch (Exception error)
     {

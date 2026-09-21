@@ -30,9 +30,37 @@ if (liveTextureArgument is not null)
         new CancellationTokenSource(
             TimeSpan.FromSeconds(210));
 
+    var manifestArgument =
+        args.FirstOrDefault(
+            argument =>
+                argument.StartsWith(
+                    "--live-texture-manifest-url=",
+                    StringComparison.Ordinal));
+
+    var chunkBaseArgument =
+        args.FirstOrDefault(
+            argument =>
+                argument.StartsWith(
+                    "--live-texture-chunk-base=",
+                    StringComparison.Ordinal));
+
+    var manifestUrl =
+        manifestArgument is null
+            ? null
+            : manifestArgument[
+                "--live-texture-manifest-url=".Length..];
+
+    var chunkBaseUrl =
+        chunkBaseArgument is null
+            ? null
+            : chunkBaseArgument[
+                "--live-texture-chunk-base=".Length..];
+
     await LiveTextureProbe.RunAsync(
         baseUrl,
-        timeout.Token);
+        timeout.Token,
+        manifestUrl,
+        chunkBaseUrl);
 
     return 0;
 }
