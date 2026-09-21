@@ -107,6 +107,6 @@ jobs:
           name: texture-package-runtime-${{ matrix.source }}
           path: |
             browser-runtime-proof.json
-            native-texture.png
+            native-texture-*.png
             tools/CUE4Parse.BrowserProbe/texture-fixture.json
             tools/CUE4Parse.BrowserProbe/fixture.json

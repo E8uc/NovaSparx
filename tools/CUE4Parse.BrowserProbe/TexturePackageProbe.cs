@@ -31,7 +31,6 @@ internal static partial class TexturePackageProbe
         CUE4Parse.Globals.FatalObjectSerializationErrors = true;
         using var document = JsonDocument.Parse(resource);
         var root = document.RootElement;
-        var item = root.GetProperty("selected");
         var versions = new VersionContainer(EGame.GAME_UE6_0);
         var scripts = ReadBytes(root, "scriptObjectsBase64", 16 * 1024 * 1024);
         var mappings = ReadBytes(root, "mappingsBase64", 24 * 1024 * 1024);
@@ -40,6 +39,8 @@ internal static partial class TexturePackageProbe
         using var globals = new ScriptObjectsReader(ReadBytes(root, "globalTocBase64", 2 * 1024 * 1024), scripts, versions);
         using var provider = new PackageFixtureProvider(new IoGlobalData(globals), versions);
         provider.MappingsContainer = new MemoryMappings(mappings);
+        foreach (var item in root.GetProperty("selected").EnumerateArray())
+        {
         var parts = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var part in item.GetProperty("parts").EnumerateArray())
         {
@@ -74,6 +75,7 @@ internal static partial class TexturePackageProbe
             throw new InvalidDataException("Browser decoded pixels disagree with desktop CUE4Parse");
         Console.WriteLine($"REAL_TEXTURE_BROWSER_OK|{path}|{texture.Format}|{mipIndex}|{decoded.Width}x{decoded.Height}|{Hash(decoded.Data)}");
         Render(decoded.Width, decoded.Height, Convert.ToBase64String(decoded.Data), path);
+        }
     }
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     private static byte[] ReadBytes(JsonElement root, string key, int limit)

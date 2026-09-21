@@ -43,8 +43,12 @@ var global = (IoStoreReader)provider.GetArchive("global.utoc");
 var scripts = global.Read(new FIoChunkId(0, 0, EIoChunkType5.ScriptObjects));
 TextureDecoder.UseAssetRipperTextureDecoder = true;
 var failures = new List<object>();
-object? selected = null;
-foreach (var file in provider.Files.Values.Where(f => f.Path.Contains("/T_", StringComparison.OrdinalIgnoreCase) && f.Path.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f.Size).Take(24))
+var selected = new List<object>();
+var targetNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "T_Wrap_faithPerch_A_MSk", "T_Wrap_faithPerch_A_B", "T_Emote_FaithPerch_SoftGlow"
+};
+foreach (var file in provider.Files.Values.Where(f => f.Path.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) && targetNames.Contains(Path.GetFileNameWithoutExtension(f.Path))).OrderBy(f => f.Path))
 {
     timeout.Token.ThrowIfCancellationRequested();
     try
@@ -63,12 +67,11 @@ foreach (var file in provider.Files.Values.Where(f => f.Path.Contains("/T_", Str
         if (file.Size + (uexp?.Size ?? 0) + ubulks.Sum(f => f.Size) + uptnls.Sum(f => f.Size) > 8 * 1024 * 1024)
             throw new InvalidDataException("Package payloads exceed 8 MiB");
         var parts = provider.SavePackage(file).Select(p => new { path = p.Key, bytesBase64 = Convert.ToBase64String(p.Value), sha256 = Hash(p.Value) }).ToArray();
-        selected = new { path = file.Path, rootClass = texture.GetType().Name, objectName = texture.Name, mipIndex,
+        selected.Add(new { path = file.Path, rootClass = texture.GetType().Name, objectName = texture.Name, mipIndex,
             width = decoded.Width, height = decoded.Height, format = texture.Format.ToString(),
             mipSha256 = Hash(mip.BulkData.Data), pixelsSha256 = Hash(decoded.Data), parts,
-            rgbaBase64 = Convert.ToBase64String(decoded.Data) };
+            rgbaBase64 = Convert.ToBase64String(decoded.Data) });
         Console.WriteLine($"REAL_TEXTURE_REFERENCE path={file.Path} class={texture.GetType().Name} mip={mipIndex} size={decoded.Width}x{decoded.Height} format={texture.Format} pixels={Hash(decoded.Data)}");
-        break;
     }
     catch (Exception error)
     {
@@ -76,7 +79,7 @@ foreach (var file in provider.Files.Values.Where(f => f.Path.Contains("/T_", Str
         Console.WriteLine($"TEXTURE_REFERENCE_FAILURE {file.Path}: {error.GetBaseException().Message}");
     }
 }
-if (selected is null) throw new InvalidDataException("No real Texture2D fixture could be extracted; see per-path failures");
+if (selected.Count != targetNames.Count) throw new InvalidDataException("Every exact Texture2D target must be captured; no substitute assets allowed. See per-path failures");
 var output = new { build, databaseBuildEquivalence = "unverified", source = "Live BuildPatch bytes parsed by desktop CUE4Parse",
     parserGame = "GAME_UE6_0", selected, failures,
     globalTocBase64 = Convert.ToBase64String(tocs["global.utoc"]),

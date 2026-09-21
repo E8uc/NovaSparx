@@ -49,11 +49,15 @@ try {
   result.realContainerBytesProven = true;
   if (process.env.REQUIRE_TEXTURE === '1') {
     assert.ok(logs.some(line => line.startsWith('REAL_TEXTURE_BROWSER_OK|')), 'No real browser package/texture proof');
-    const native = await page.evaluate(async () => await globalThis.nativeTexturePromise);
-    assert.ok(native?.pixelsSha256 && native.width > 0 && native.height > 0);
-    assert.ok(logs.some(line => line.endsWith(native.pixelsSha256)), 'Displayed bytes do not match native decode');
-    await page.locator('#native-texture').screenshot({ path: 'native-texture.png' });
-    result.textureFixture = native;
+    const native = await page.evaluate(async () => await Promise.all(globalThis.nativeTexturePromises || []));
+    assert.equal(native.length, 3, 'All three real Texture targets must render');
+    assert.equal(new Set(native.map(item => item.path)).size, 3, 'Do not substitute duplicate assets');
+    for (const [index, item] of native.entries()) {
+      assert.ok(item.pixelsSha256 && item.width > 0 && item.height > 0);
+      assert.ok(logs.some(line => line.startsWith(`REAL_TEXTURE_BROWSER_OK|${item.path}|`) && line.endsWith(item.pixelsSha256)), 'Displayed bytes do not match native decode');
+      await page.locator(`#native-texture-${index}`).screenshot({ path: `native-texture-${index}.png` });
+    }
+    result.textureFixtures = native;
     console.log('REAL_TEXTURE_VISIBLE', JSON.stringify(native));
   }
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
