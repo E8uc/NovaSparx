@@ -4,12 +4,202 @@ import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
+const LIVE_MANIFEST_ENDPOINT = 'https://export-service-new.dillyapis.com/v1/manifests';
+const LIVE_CHUNK_BASE = new URL('https://egdownload.fastly-edge.com/Builds/Fortnite/CloudDir/');
+const LIVE_MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
+const LIVE_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+
+let liveManifestPromise = null;
+let liveManifestRequests = 0;
+let liveChunkRequests = 0;
+let liveChunkBytes = 0;
+
+async function fetchBounded(url, maxBytes, label) {
+  const response = await fetch(url, {
+    redirect: 'follow',
+    headers: {
+      accept: 'application/json,application/octet-stream,*/*;q=0.8'
+    }
+  });
+  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (declared > maxBytes) throw new Error(`${label} exceeded the declared byte budget`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > maxBytes) throw new Error(`${label} exceeded the byte budget`);
+  return bytes;
+}
+
+function looksLikeRawManifest(bytes) {
+  if (bytes.byteLength < 16) return false;
+  for (const value of bytes) {
+    if (value === 9 || value === 10 || value === 13 || value === 32) continue;
+    return value !== 0x7b && value !== 0x5b;
+  }
+  return false;
+}
+
+function collectManifestCandidates(root) {
+  const urls = new Map();
+  const ids = new Map();
+
+  const addUrl = (value, score) => {
+    try {
+      const url = new URL(String(value || ''));
+      if (url.protocol !== 'https:') return;
+      const key = url.toString();
+      urls.set(key, Math.max(urls.get(key) ?? -Infinity, score));
+    } catch {}
+  };
+
+  const addId = (value, score) => {
+    const id = String(value ?? '').trim();
+    if (!id || id.length > 240) return;
+    ids.set(id, Math.max(ids.get(id) ?? -Infinity, score));
+  };
+
+  const walk = node => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+
+    const objectText = JSON.stringify(node).toLowerCase();
+    let baseScore = 0;
+    if (objectText.includes('windows')) baseScore += 40;
+    if (objectText.includes('fortnite')) baseScore += 25;
+    if (objectText.includes('live') || objectText.includes('latest')) baseScore += 10;
+    if (objectText.includes('android') || objectText.includes('ios') || objectText.includes('mac')) baseScore -= 40;
+    if (objectText.includes('studio') || objectText.includes('uefn')) baseScore -= 15;
+
+    for (const [rawKey, value] of Object.entries(node)) {
+      const key = rawKey.toLowerCase();
+
+      if (typeof value === 'string') {
+        const lower = value.toLowerCase();
+        if (
+          lower.includes('.manifest') ||
+          key.includes('manifest') ||
+          key.includes('download')
+        ) {
+          addUrl(value, baseScore + (lower.includes('.manifest') ? 80 : 0));
+        }
+
+        if (key === 'manifestid' || key === 'manifest_id' || key === 'id') {
+          addId(value, baseScore);
+        }
+      } else if (
+        typeof value === 'number' &&
+        (key === 'manifestid' || key === 'manifest_id' || key === 'id')
+      ) {
+        addId(value, baseScore);
+      }
+
+      walk(value);
+    }
+  };
+
+  walk(root);
+
+  return {
+    urls: [...urls.entries()]
+      .map(([url, score]) => ({ url, score }))
+      .sort((a, b) => b.score - a.score),
+    ids: [...ids.entries()]
+      .map(([id, score]) => ({ id, score }))
+      .sort((a, b) => b.score - a.score)
+  };
+}
+
+async function resolveRawManifest(url, visited = new Set(), depth = 0) {
+  if (depth > 5) throw new Error('Live manifest recursion limit reached');
+  const normalized = new URL(url).toString();
+  if (visited.has(normalized)) throw new Error('Live manifest source loop detected');
+  visited.add(normalized);
+
+  const bytes = await fetchBounded(normalized, LIVE_MAX_MANIFEST_BYTES, 'Live manifest source');
+  if (looksLikeRawManifest(bytes)) return { bytes, source: normalized };
+
+  let data;
+  try {
+    data = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error('Live manifest metadata could not be decoded');
+  }
+
+  const candidates = collectManifestCandidates(data);
+
+  for (const candidate of candidates.urls) {
+    if (candidate.url === normalized) continue;
+    try {
+      return await resolveRawManifest(candidate.url, visited, depth + 1);
+    } catch {}
+  }
+
+  if (!normalized.toLowerCase().endsWith('.manifest')) {
+    const base = normalized.replace(/\/+$/, '');
+    for (const candidate of candidates.ids) {
+      try {
+        return await resolveRawManifest(
+          base + '/' + encodeURIComponent(candidate.id),
+          visited,
+          depth + 1
+        );
+      } catch {}
+    }
+  }
+
+  throw new Error('No raw current Fortnite manifest could be resolved');
+}
+
 const bundle = path.resolve(process.argv[2] || '');
 assert.ok(fs.existsSync(path.join(bundle, '_framework/dotnet.js')), 'Pass the published AppBundle directory');
 const logs = [];
 let wasmBytes = 0;
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
+
+  try {
+    if (pathname === '/live/manifest') {
+      liveManifestRequests += 1;
+      const live = await (liveManifestPromise ||= resolveRawManifest(LIVE_MANIFEST_ENDPOINT));
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Length', String(live.bytes.byteLength));
+      res.setHeader('X-NovaSparx-Live-Source', live.source);
+      res.end(Buffer.from(live.bytes));
+      return;
+    }
+
+    if (pathname.startsWith('/live/chunk/')) {
+      const relative = decodeURIComponent(pathname.slice('/live/chunk/'.length));
+      if (!relative || relative.startsWith('/') || relative.includes('..')) {
+        res.writeHead(400).end();
+        return;
+      }
+
+      const upstream = new URL(relative, LIVE_CHUNK_BASE);
+      if (!upstream.toString().startsWith(LIVE_CHUNK_BASE.toString())) {
+        res.writeHead(403).end();
+        return;
+      }
+
+      liveChunkRequests += 1;
+      const bytes = await fetchBounded(
+        upstream,
+        LIVE_MAX_CHUNK_BYTES,
+        'Live BuildPatch chunk'
+      );
+      liveChunkBytes += bytes.byteLength;
+
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Length', String(bytes.byteLength));
+      res.end(Buffer.from(bytes));
+      return;
+    }
   if (pathname === '/') {
     res.setHeader('Content-Type', 'text/html');
     res.end('<!doctype html><meta charset="utf-8"><title>CUE4Parse browser runtime proof</title><script type="module" src="/main.js"></script>');
@@ -24,6 +214,11 @@ const server = http.createServer((req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.end(data);
   } catch { res.writeHead(404).end(); }
+  } catch (error) {
+    res.statusCode = 502;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end(String(error?.stack || error));
+  }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
@@ -157,6 +352,54 @@ try {
     result.workerTerminationProven = true;
     console.log('REAL_TEXTURE_WORKER_VISIBLE', JSON.stringify(workerNative));
   }
+  if (process.env.REQUIRE_LIVE_BUILD_PATCH === '1') {
+    const liveWorker = await page.evaluate(async () => {
+      return await new Promise((resolve, reject) => {
+        const worker = new Worker('/worker.js?test=live-buildpatch', { type: 'module' });
+        const timeout = setTimeout(() => {
+          worker.terminate();
+          reject(new Error('Live BuildPatch worker proof timed out'));
+        }, 180000);
+
+        const fail = error => {
+          clearTimeout(timeout);
+          worker.terminate();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+
+        worker.onerror = event => {
+          fail(new Error(event.message || 'Live BuildPatch worker failed'));
+        };
+
+        worker.onmessage = event => {
+          const message = event.data || {};
+          if (message.type === 'error') {
+            fail(new Error(message.error || 'Live BuildPatch worker failed'));
+            return;
+          }
+          if (message.type === 'done') {
+            clearTimeout(timeout);
+            worker.terminate();
+            resolve({ exitCode: message.exitCode });
+          }
+        };
+      });
+    });
+
+    assert.equal(liveWorker.exitCode, 0, 'Live BuildPatch worker must exit successfully');
+    assert.ok(liveManifestRequests >= 1, 'Worker did not fetch a live Fortnite manifest');
+    assert.ok(liveChunkRequests >= 1, 'Worker did not fetch any live BuildPatch chunks');
+    assert.ok(liveChunkBytes > 0, 'Worker fetched no live BuildPatch bytes');
+
+    result.liveBuildPatchWorkerProven = true;
+    result.liveBuildPatchNetwork = {
+      manifestRequests: liveManifestRequests,
+      chunkRequests: liveChunkRequests,
+      chunkBytes: liveChunkBytes
+    };
+    console.log('LIVE_BUILDPATCH_WORKER_PROVEN', JSON.stringify(result.liveBuildPatchNetwork));
+  }
+
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=reject-partial-block`);
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
