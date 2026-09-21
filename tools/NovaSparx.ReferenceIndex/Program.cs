@@ -4,6 +4,7 @@ using System.Text.Json;
 using CUE4Parse.UE4.AssetRegistry;
 using CUE4Parse.UE4.AssetRegistry.Objects;
 using CUE4Parse.UE4.IO;
+using CUE4Parse.UE4.IO.Objects;
 using CUE4Parse.UE4.Versions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NovaSparx.Backend;
@@ -172,6 +173,303 @@ catch (Exception ex)
     Console.WriteLine(
         $"Post-mount warning: {ex.Message}");
 }
+
+var locationOutputDirectory =
+    Path.Combine(
+        Directory.GetParent(
+            outputDirectory)
+            ?.FullName
+        ?? outputDirectory,
+        "location-index");
+
+var packageLocations =
+    new SortedDictionary<
+        string,
+        string>(
+            StringComparer.Ordinal);
+
+var locationContainers =
+    new HashSet<string>(
+        StringComparer.OrdinalIgnoreCase);
+
+foreach (
+    var entry in provider.Files
+        .Values
+        .OfType<FIoStoreEntry>())
+{
+    if (
+        !entry.IsPackageData ||
+        !(
+            entry.Path.EndsWith(
+                ".uasset",
+                StringComparison.OrdinalIgnoreCase) ||
+            entry.Path.EndsWith(
+                ".umap",
+                StringComparison.OrdinalIgnoreCase)
+        )
+    )
+    {
+        continue;
+    }
+
+    var path =
+        entry.Path
+            .Replace('\\', '/')
+            .TrimStart('/')
+            .ToLowerInvariant();
+
+    var tocPath =
+        entry.IoStoreReader.Path
+            .Replace('\\', '/')
+            .TrimStart('/');
+
+    if (
+        string.IsNullOrWhiteSpace(path) ||
+        string.IsNullOrWhiteSpace(tocPath))
+    {
+        continue;
+    }
+
+    packageLocations[path] =
+        tocPath;
+
+    locationContainers.Add(
+        tocPath);
+}
+
+static byte LocationShard(
+    string value)
+{
+    uint hash =
+        2166136261;
+
+    foreach (
+        var item in Encoding.UTF8
+            .GetBytes(
+                value
+                    .ToLowerInvariant()))
+    {
+        hash ^=
+            item;
+
+        hash =
+            unchecked(
+                hash *
+                16777619);
+    }
+
+    return (byte)(
+        hash &
+        0xff);
+}
+
+static async Task<(
+    int Entries,
+    int Shards,
+    long Bytes)>
+WriteLocationIndexAsync(
+    string root,
+    IReadOnlyDictionary<
+        string,
+        string> source,
+    string version,
+    int containerCount,
+    CancellationToken cancellationToken)
+{
+    var temporary =
+        root +
+        ".tmp";
+
+    if (
+        Directory.Exists(
+            temporary))
+    {
+        Directory.Delete(
+            temporary,
+            recursive: true);
+    }
+
+    Directory.CreateDirectory(
+        temporary);
+
+    var buckets =
+        new Dictionary<
+            byte,
+            SortedDictionary<
+                string,
+                string>>();
+
+    foreach (
+        var pair in source)
+    {
+        var shard =
+            LocationShard(
+                pair.Key);
+
+        if (
+            !buckets.TryGetValue(
+                shard,
+                out var values))
+        {
+            values =
+                new SortedDictionary<
+                    string,
+                    string>(
+                        StringComparer.Ordinal);
+
+            buckets[
+                shard] =
+                values;
+        }
+
+        values[
+            pair.Key] =
+            pair.Value;
+    }
+
+    var options =
+        new JsonSerializerOptions
+        {
+            PropertyNamingPolicy =
+                JsonNamingPolicy.CamelCase,
+            WriteIndented =
+                false
+        };
+
+    long totalBytes = 0;
+
+    foreach (
+        var pair in buckets)
+    {
+        var path =
+            Path.Combine(
+                temporary,
+                $"{pair.Key:x2}.json.gz");
+
+        await using var file =
+            new FileStream(
+                path,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None);
+
+        await using var gzip =
+            new GZipStream(
+                file,
+                CompressionLevel.SmallestSize);
+
+        var payload =
+            new Dictionary<
+                string,
+                object?>
+            {
+                ["schema"] =
+                    "novasparx.asset-locations.v1",
+
+                ["valueProperty"] =
+                    "toc",
+
+                ["items"] =
+                    pair.Value
+            };
+
+        await JsonSerializer
+            .SerializeAsync(
+                gzip,
+                payload,
+                options,
+                cancellationToken);
+
+        await gzip.FlushAsync(
+            cancellationToken);
+
+        totalBytes +=
+            file.Length;
+    }
+
+    var manifest =
+        new
+        {
+            schema =
+                "novasparx.asset-locations.v1",
+
+            builtAt =
+                DateTimeOffset.UtcNow,
+
+            fortniteVersion =
+                version,
+
+            hash =
+                "fnv1a32-low-byte",
+
+            entries =
+                source.Count,
+
+            containers =
+                containerCount,
+
+            shards =
+                buckets.Count,
+
+            bytes =
+                totalBytes,
+
+            path =
+                "{shard}.json.gz"
+        };
+
+    await File.WriteAllTextAsync(
+        Path.Combine(
+            temporary,
+            "manifest.json"),
+        JsonSerializer.Serialize(
+            manifest,
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy =
+                    JsonNamingPolicy.CamelCase,
+                WriteIndented =
+                    true
+            }),
+        cancellationToken);
+
+    if (
+        Directory.Exists(
+            root))
+    {
+        Directory.Delete(
+            root,
+            recursive: true);
+    }
+
+    Directory.Move(
+        temporary,
+        root);
+
+    return (
+        source.Count,
+        buckets.Count,
+        totalBytes);
+}
+
+if (
+    packageLocations.Count <
+        1)
+{
+    throw new InvalidDataException(
+        "Mounted Fortnite IoStore indexes exposed no package locations.");
+}
+
+var locationStats =
+    await WriteLocationIndexAsync(
+        locationOutputDirectory,
+        packageLocations,
+        version,
+        locationContainers.Count,
+        timeout.Token);
+
+Console.WriteLine(
+    $"ASSET_LOCATION_INDEX|packages={locationStats.Entries}|containers={locationContainers.Count}|shards={locationStats.Shards}|bytes={locationStats.Bytes}");
 
 var registryEntry =
     provider.Files
