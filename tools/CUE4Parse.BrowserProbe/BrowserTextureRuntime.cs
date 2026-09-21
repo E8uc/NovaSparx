@@ -359,19 +359,30 @@ internal static class BrowserTextureRuntime
         cancellationToken
             .ThrowIfCancellationRequested();
 
-        var targetEntry =
+        var targetMatches =
             provider.Files.Values
                 .OfType<FIoStoreEntry>()
-                .SingleOrDefault(
+                .Where(
                     file =>
+                        file.IsPackageData &&
+                        ReferenceEquals(
+                            file.IoStoreReader,
+                            targetReader) &&
                         NormalizeAssetPath(
                                 file.Path)
                             .Equals(
                                 cleanPath,
                                 StringComparison.OrdinalIgnoreCase))
-            ?? throw new FileNotFoundException(
-                "The mounted IoStore container does not contain the exact Texture path.",
-                cleanPath);
+                .ToArray();
+
+        if (targetMatches.Length != 1)
+        {
+            throw new InvalidDataException(
+                $"Expected exactly one package-data IoStore entry for {cleanPath} in {targetReader.Name}; found {targetMatches.Length}.");
+        }
+
+        var targetEntry =
+            targetMatches[0];
 
         var targetChunkIds =
             targetReader.TocResource
