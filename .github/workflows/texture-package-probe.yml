@@ -77,6 +77,7 @@ jobs:
         env:
           REQUIRE_TEXTURE: "1"
           REQUIRE_LIVE_BUILD_PATCH: "1"
+          REQUIRE_LIVE_TEXTURE: "1"
         shell: bash
         run: |
           set -euo pipefail
@@ -109,5 +110,6 @@ jobs:
             browser-runtime-proof.json
             native-texture-*.png
             worker-texture-*.png
+            live-texture-*.png
             tools/CUE4Parse.BrowserProbe/texture-fixture.json
             tools/CUE4Parse.BrowserProbe/fixture.json
