@@ -47,6 +47,15 @@ try {
   assert.equal(logs.filter(line => line.includes('CUE4PARSE_STAGE|real-toc-ctr-index|supported|')).length, 2, 'Both real encrypted indexes must pass');
   assert.equal(logs.filter(line => line.includes('CUE4PARSE_STAGE|real-ucas-block|supported|')).length, 2, 'Both real UCAS blocks must pass');
   result.realContainerBytesProven = true;
+  if (process.env.REQUIRE_TEXTURE === '1') {
+    assert.ok(logs.some(line => line.startsWith('REAL_TEXTURE_BROWSER_OK|')), 'No real browser package/texture proof');
+    const native = await page.evaluate(async () => await globalThis.nativeTexturePromise);
+    assert.ok(native?.pixelsSha256 && native.width > 0 && native.height > 0);
+    assert.ok(logs.some(line => line.endsWith(native.pixelsSha256)), 'Displayed bytes do not match native decode');
+    await page.locator('#native-texture').screenshot({ path: 'native-texture.png' });
+    result.textureFixture = native;
+    console.log('REAL_TEXTURE_VISIBLE', JSON.stringify(native));
+  }
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=reject-partial-block`);
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });

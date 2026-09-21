@@ -10,6 +10,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="texture-fixture.json" LogicalName="texture-package-fixture.json" Condition="Exists('texture-fixture.json')" />
+    <PackageReference Include="CUE4Parse-Conversion" Version="1.2.2.202609" />
     <EmbeddedResource Include="fixture.json" LogicalName="real-utoc-fixture.json" Condition="Exists('fixture.json')" />
     <PackageReference Include="CUE4Parse" Version="1.2.2.202609" Condition="'$(CUE4ParseSourceProject)' == ''" />
     <ProjectReference Include="$(CUE4ParseSourceProject)" Condition="'$(CUE4ParseSourceProject)' != ''" />

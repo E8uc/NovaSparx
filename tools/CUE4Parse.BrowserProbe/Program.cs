@@ -134,6 +134,8 @@ using (var fixture = JsonDocument.Parse(fixtureStream))
     }
 }
 
+TexturePackageProbe.RunIfPresent();
+
 Console.WriteLine("CUE4PARSE_ASSET_PARSING_UNPROVEN");
 Console.WriteLine("CUE4PARSE_BROWSER_WASM_OK");
 

@@ -1,26 +1,112 @@
 name: Real Texture package reference
+
 on:
-  pull_request:
-    paths: ['tools/NovaSparx.TextureFixture/**', '.github/workflows/texture-package-probe.yml']
   push:
     branches: [main]
-    paths: ['tools/NovaSparx.TextureFixture/**', '.github/workflows/texture-package-probe.yml']
+    paths:
+      - "tools/CUE4Parse.BrowserProbe/**"
+      - "tools/NovaSparx.TextureFixture/**"
+      - ".github/workflows/texture-package-probe.yml"
+  pull_request:
+    paths:
+      - "tools/CUE4Parse.BrowserProbe/**"
+      - "tools/NovaSparx.TextureFixture/**"
+      - ".github/workflows/texture-package-probe.yml"
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
-  texture-reference:
+  browser-wasm:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [release, master]
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check out verified current CUE4Parse master
+        if: matrix.source == 'master'
+        uses: actions/checkout@v4
         with:
-          dotnet-version: '10.0.x'
-      - name: Extract bounded real Texture package reference
-        run: dotnet run --project tools/NovaSparx.TextureFixture/NovaSparx.TextureFixture.csproj --configuration Release -- texture-package-fixture.json
-      - uses: actions/upload-artifact@v4
+          repository: FabianFG/CUE4Parse
+          ref: cfff57a0483501e0fa555dff5bf542748afe0bab
+          path: tools/upstream-cue4parse
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install browser WASM workload
+        run: dotnet workload install wasm-tools
+
+      - name: Prepare real bounded TOC fixture using desktop CUE4Parse
+        run: dotnet run --project tools/NovaSparx.BrowserFixture/NovaSparx.BrowserFixture.csproj --configuration Release -- tools/CUE4Parse.BrowserProbe/fixture.json
+
+      - name: Capture real Texture package and desktop pixel reference
+        run: dotnet run --project tools/NovaSparx.TextureFixture/NovaSparx.TextureFixture.csproj --configuration Release -- tools/CUE4Parse.BrowserProbe/texture-fixture.json
+
+      - name: Publish isolated browser probe
+        shell: bash
+        env:
+          PROBE_SOURCE: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$PROBE_SOURCE" == "master" ]]; then
+            args+=("-p:CUE4ParseSourceProject=$GITHUB_WORKSPACE/tools/upstream-cue4parse/CUE4Parse/CUE4Parse.csproj" "-p:CUE4PARSE_SKIP_NATIVE=true")
+          fi
+          dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release "${args[@]}"
+
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install actual browser runtime
+        run: |
+          npm install --no-save --package-lock=false playwright@1.62.1
+          npx playwright install --with-deps chromium
+
+      - name: Verify and execute browser bundle
+        env:
+          REQUIRE_TEXTURE: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          output_root="tools/CUE4Parse.BrowserProbe/bin/Release/net10.0"
+          test -d "$output_root"
+
+          dotnet_js="$(find "$output_root" -type f -path '*/_framework/dotnet.js' -print -quit)"
+          test -n "$dotnet_js"
+
+          framework_dir="$(dirname "$dotnet_js")"
+          bundle="$(dirname "$framework_dir")"
+          echo "Browser probe bundle: $bundle"
+
+          wasm_file="$(find "$framework_dir" -type f -name '*.wasm' -print -quit)"
+          test -n "$wasm_file"
+          echo "Browser probe WASM: $wasm_file"
+
+          cp tools/CUE4Parse.BrowserProbe/main.js "$bundle/main.js"
+
+
+          node tools/CUE4Parse.BrowserProbe/runtime.test.mjs "$bundle"
+
+      - name: Preserve runtime evidence
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: texture-package-reference
-          path: texture-package-fixture.json
+          name: texture-package-runtime-${{ matrix.source }}
+          path: |
+            browser-runtime-proof.json
+            native-texture.png
+            tools/CUE4Parse.BrowserProbe/texture-fixture.json
+            tools/CUE4Parse.BrowserProbe/fixture.json
