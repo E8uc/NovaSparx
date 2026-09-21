@@ -80,8 +80,13 @@ foreach (var file in provider.Files.Values.Where(f => f.Path.EndsWith(".uasset",
     }
 }
 if (selected.Count != targetNames.Count) throw new InvalidDataException("Every exact Texture2D target must be captured; no substitute assets allowed. See per-path failures");
+var publicAesKeys = keys.Select(pair => new
+{
+    guid = pair.Key.ToString(),
+    keyHex = Convert.ToHexString(pair.Value.Key)
+}).ToArray();
 var output = new { build, databaseBuildEquivalence = "unverified", source = "Live BuildPatch bytes parsed by desktop CUE4Parse",
-    parserGame = "GAME_UE6_0", selected, failures,
+    parserGame = "GAME_UE6_0", publicAesKeys, selected, failures,
     globalTocBase64 = Convert.ToBase64String(tocs["global.utoc"]),
     scriptObjectsBase64 = Convert.ToBase64String(scripts), scriptObjectsSha256 = Hash(scripts),
     mappingsBase64 = Convert.ToBase64String(mappingBytes), mappingsSha256 = Hash(mappingBytes),
