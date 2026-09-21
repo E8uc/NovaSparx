@@ -11,6 +11,12 @@ on:
       - "PublicFortniteSources.cs"
       - "NovaSparx.Backend.csproj"
       - ".github/workflows/build-reference-index.yml"
+  pull_request:
+    paths:
+      - "tools/NovaSparx.ReferenceIndex/**"
+      - "PublicFortniteSources.cs"
+      - "NovaSparx.Backend.csproj"
+      - ".github/workflows/build-reference-index.yml"
 
 permissions:
   contents: write
@@ -35,36 +41,41 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - name: Build Blueprint referencer index
+      - name: Build reference and asset-location indices
         env:
           NOVASPARX_CACHE_DIR: /tmp/novasparx-reference-index
         run: |
           dotnet run             --project tools/NovaSparx.ReferenceIndex/NovaSparx.ReferenceIndex.csproj             --configuration Release             -- web/reference-index
+          test -s web/location-index/manifest.json
 
-      - name: Commit reference index
+      - name: Commit generated indices
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
 
           generated="$(mktemp -d)"
-          cp -a web/reference-index/. "$generated/"
+          mkdir -p "$generated/reference-index" "$generated/location-index"
+          cp -a web/reference-index/. "$generated/reference-index/"
+          cp -a web/location-index/. "$generated/location-index/"
 
           git fetch origin main
           git reset --hard origin/main
 
-          rm -rf web/reference-index
-          mkdir -p web/reference-index
-          cp -a "$generated"/. web/reference-index/
+          rm -rf web/reference-index web/location-index
+          mkdir -p web/reference-index web/location-index
+          cp -a "$generated/reference-index"/. web/reference-index/
+          cp -a "$generated/location-index"/. web/location-index/
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add web/reference-index
+          git add web/reference-index web/location-index
 
           if git diff --cached --quiet; then
-            echo "Reference index is already current."
+            echo "Generated indices are already current."
             exit 0
           fi
 
-          git commit -m "Build NovaSparx AssetRegistry reference index"
+          git commit -m "Build NovaSparx generated indices"
           git push origin HEAD:main
