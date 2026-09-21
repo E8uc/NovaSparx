@@ -78,6 +78,7 @@ jobs:
           REQUIRE_TEXTURE: "1"
           REQUIRE_LIVE_BUILD_PATCH: "1"
           REQUIRE_LIVE_TEXTURE: "1"
+          REQUIRE_PUBLIC_SOURCE_CORS: "1"
         shell: bash
         run: |
           set -euo pipefail
