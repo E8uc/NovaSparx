@@ -561,64 +561,33 @@ try {
     const live = await (liveManifestPromise ||= resolveRawManifest(LIVE_MANIFEST_ENDPOINT));
     assert.ok(liveChunkPaths.length > 0, 'No live BuildPatch chunk path was observed for CORS proof');
 
-    const mappingMetadataBytes = await fetchBounded(
-      'https://api.fortniteapi.com/v1/mappings',
-      4 * 1024 * 1024,
-      'Mappings metadata for CORS matrix'
-    );
-    const mappingMetadata = JSON.parse(new TextDecoder().decode(mappingMetadataBytes));
-    let mappingUrl = '';
-    {
-      const walk = value => {
-        if (mappingUrl) return;
-        if (typeof value === 'string') {
-          if (/^https:\/\//i.test(value) && /usmap/i.test(value)) mappingUrl = value;
-          return;
-        }
-        if (Array.isArray(value)) {
-          for (const item of value) walk(item);
-          return;
-        }
-        if (value && typeof value === 'object') {
-          for (const item of Object.values(value)) walk(item);
-        }
-      };
-      walk(mappingMetadata);
-    }
-    assert.ok(mappingUrl, 'Mappings metadata exposed no HTTPS usmap URL');
-
-    const cors = await page.evaluate(async ({ rawManifestUrl, chunkUrl, mappingUrl }) => {
-      const safe = async (label, task) => {
+    const cors = await page.evaluate(async ({ rawManifestUrl, chunkUrl }) => {
+      const settle = async (label, task) => {
         try {
-          return {
-            ok: true,
-            label,
-            ...(await task())
-          };
+          return { ok: true, label, ...(await task()) };
         } catch (error) {
           return {
             ok: false,
             label,
-            error: String(error?.message || error || 'Unknown CORS failure')
+            error: error?.message || String(error)
           };
         }
       };
 
-      const fetchJson = async url => {
+      const fetchJson = async (url, label) => {
         const response = await fetch(url, {
           mode: 'cors',
           credentials: 'omit',
           cache: 'no-store',
           headers: { accept: 'application/json,*/*;q=0.8' }
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
         const text = await response.text();
-        if (text.length > 4 * 1024 * 1024) throw new Error('JSON budget exceeded');
-        JSON.parse(text);
-        return { status: response.status, bytes: new TextEncoder().encode(text).byteLength };
+        if (text.length > 4 * 1024 * 1024) throw new Error(`${label} exceeded JSON budget`);
+        return { status: response.status, json: JSON.parse(text) };
       };
 
-      const probeRange = async url => {
+      const probeRange = async (url, label) => {
         const response = await fetch(url, {
           mode: 'cors',
           credentials: 'omit',
@@ -628,64 +597,118 @@ try {
             accept: 'application/octet-stream,*/*;q=0.8'
           }
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
         const reader = response.body?.getReader?.();
         if (!reader) {
           const bytes = new Uint8Array(await response.arrayBuffer());
-          if (!bytes.byteLength) throw new Error('No response bytes');
+          if (!bytes.byteLength) throw new Error(`${label} returned no bytes`);
           return { status: response.status, bytes: bytes.byteLength };
         }
         const first = await reader.read();
         await reader.cancel('cors-probe-complete').catch(() => {});
-        if (first.done || !first.value?.byteLength) throw new Error('No response bytes');
+        if (first.done || !first.value?.byteLength) throw new Error(`${label} returned no bytes`);
         return { status: response.status, bytes: first.value.byteLength };
       };
 
-      const entries = await Promise.all([
-        safe(
-          'dilly-manifest-metadata',
-          () => fetchJson('https://export-service-new.dillyapis.com/v1/manifests')
-        ),
-        safe(
-          'dilly-aes-metadata',
-          () => fetchJson('https://export-service-new.dillyapis.com/v1/aes')
-        ),
-        safe(
-          'fortniteapi-mappings-metadata',
-          () => fetchJson('https://api.fortniteapi.com/v1/mappings')
-        ),
-        safe(
-          'raw-fortnite-manifest',
-          () => probeRange(rawManifestUrl)
-        ),
-        safe(
-          'fortnite-mappings-file',
-          () => probeRange(mappingUrl)
-        ),
-        safe(
-          'epic-buildpatch-chunk',
-          () => probeRange(chunkUrl)
-        )
-      ]);
+      const findUsmap = root => {
+        let found = '';
+        const walk = value => {
+          if (found) return;
+          if (typeof value === 'string') {
+            if (/^https:\/\//i.test(value) && /usmap/i.test(value)) found = value;
+            return;
+          }
+          if (Array.isArray(value)) {
+            for (const item of value) walk(item);
+            return;
+          }
+          if (value && typeof value === 'object') {
+            for (const item of Object.values(value)) walk(item);
+          }
+        };
+        walk(root);
+        return found;
+      };
 
-      return Object.fromEntries(entries.map(entry => [entry.label, entry]));
+      const results = {};
+
+      results.manifestMetadata = await settle(
+        'Dilly manifest metadata',
+        async () => {
+          const value = await fetchJson(
+            'https://export-service-new.dillyapis.com/v1/manifests',
+            'Dilly manifest metadata'
+          );
+          return { status: value.status };
+        }
+      );
+
+      results.aesMetadata = await settle(
+        'Dilly AES metadata',
+        async () => {
+          const value = await fetchJson(
+            'https://export-service-new.dillyapis.com/v1/aes',
+            'Dilly AES metadata'
+          );
+          return { status: value.status };
+        }
+      );
+
+      let mappingUrl = '';
+      results.mappingsMetadata = await settle(
+        'FortniteAPI mappings metadata',
+        async () => {
+          const value = await fetchJson(
+            'https://api.fortniteapi.com/v1/mappings',
+            'FortniteAPI mappings metadata'
+          );
+          mappingUrl = findUsmap(value.json);
+          if (!mappingUrl) throw new Error('Mappings metadata exposed no HTTPS usmap URL');
+          return { status: value.status, mappingUrl };
+        }
+      );
+
+      results.rawManifest = await settle(
+        'Raw Fortnite manifest',
+        () => probeRange(rawManifestUrl, 'Raw Fortnite manifest')
+      );
+
+      results.mappingsFile = mappingUrl
+        ? await settle(
+            'Fortnite mappings file',
+            () => probeRange(mappingUrl, 'Fortnite mappings file')
+          )
+        : {
+            ok: false,
+            label: 'Fortnite mappings file',
+            error: 'Mappings metadata did not provide a usable URL'
+          };
+
+      results.buildPatchChunk = await settle(
+        'Epic BuildPatch chunk',
+        () => probeRange(chunkUrl, 'Epic BuildPatch chunk')
+      );
+
+      return results;
     }, {
       rawManifestUrl: live.source,
-      chunkUrl: new URL(liveChunkPaths[0], LIVE_CHUNK_BASE).toString(),
-      mappingUrl
+      chunkUrl: new URL(liveChunkPaths[0], LIVE_CHUNK_BASE).toString()
     });
 
     result.publicSourceCors = cors;
-    result.publicSourceDirectReady =
-      Object.values(cors).every(entry => entry.ok === true);
+    console.log('PUBLIC_SOURCE_CORS_MATRIX', JSON.stringify(cors));
 
-    console.log(
-      'PUBLIC_SOURCE_CORS_MATRIX',
-      JSON.stringify({
-        directReady: result.publicSourceDirectReady,
-        cors
-      })
+    const failedCors = Object.values(cors).filter(item => !item?.ok);
+    result.publicSourceCorsProven = failedCors.length === 0;
+
+    assert.equal(
+      failedCors.length,
+      0,
+      'Direct browser CORS failed for: ' +
+        failedCors.map(item => `${item.label}: ${item.error}`).join(' | ')
     );
+
+    console.log('PUBLIC_SOURCE_CORS_PROVEN', JSON.stringify(cors));
   }
 
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
