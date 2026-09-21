@@ -49,10 +49,23 @@ try {
     }
   });
 
+  const test =
+    new URL(globalThis.location.href)
+      .searchParams
+      .get("test");
+
+  const args =
+    test === "live-buildpatch"
+      ? [
+          "--live-buildpatch-base=" +
+          new URL("./live/", globalThis.location.href).toString()
+        ]
+      : [];
+
   const exitCode =
     await runMain(
       getConfig().mainAssemblyName,
-      []
+      args
     );
 
   postMessage({
