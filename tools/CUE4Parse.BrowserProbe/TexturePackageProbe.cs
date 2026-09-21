@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices.JavaScript;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text.Json;
 using CUE4Parse.FileProvider;
@@ -17,10 +18,17 @@ internal static partial class TexturePackageProbe
     [JSImport("render", "texture-view")]
     internal static partial void Render(int width, int height, string rgba, string path);
 
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicParameterlessConstructor, typeof(UTexture2D))]
     public static void RunIfPresent()
     {
         using var resource = typeof(TexturePackageProbe).Assembly.GetManifestResourceStream("texture-package-fixture.json");
         if (resource is null) return;
+        // CUE4Parse constructs registered classes through Activator. Keep the
+        // actual constructor under WASM trimming; do not force the asset type.
+        ObjectTypeRegistry.RegisterClass("Texture2D", typeof(UTexture2D));
+        if (Activator.CreateInstance(typeof(UTexture2D)) is not UTexture2D)
+            throw new InvalidOperationException("Texture2D constructor unavailable in browser runtime");
+        CUE4Parse.Globals.FatalObjectSerializationErrors = true;
         using var document = JsonDocument.Parse(resource);
         var root = document.RootElement;
         var item = root.GetProperty("selected");
@@ -51,8 +59,9 @@ internal static partial class TexturePackageProbe
         using var ubulk = Payload(".ubulk");
         using var uptnl = Payload(".uptnl");
         IPackage package = new IoPackage(uasset, null, ubulk, uptnl, provider);
-        if (package.GetExport(item.GetProperty("objectName").GetString()!) is not UTexture2D texture)
-            throw new InvalidDataException("Real package root is not UTexture2D in browser");
+        var rootObject = package.GetExport(item.GetProperty("objectName").GetString()!);
+        if (rootObject is not UTexture2D texture)
+            throw new InvalidDataException($"Real package root is {rootObject.GetType().Name}, export type {rootObject.ExportType}; expected UTexture2D");
         if (texture.Format.ToString() != item.GetProperty("format").GetString()) throw new InvalidDataException("Texture format mismatch");
         var mipIndex = item.GetProperty("mipIndex").GetInt32();
         var mip = texture.GetMip(mipIndex) ?? throw new InvalidDataException("Missing real texture mip");
