@@ -1,4 +1,5 @@
 using CUE4Parse.UE4.IO;
+using CUE4Parse.UE4.Versions;
 using CUE4Parse.UE4.IO.Objects;
 using CUE4Parse.UE4.Readers;
 using CUE4Parse.Encryption.Aes;
@@ -76,27 +77,65 @@ using (var fixtureStream = typeof(BrowserAesEcb).Assembly.GetManifestResourceStr
     ?? throw new InvalidOperationException("Real TOC fixture was not generated"))
 using (var fixture = JsonDocument.Parse(fixtureStream))
 {
-    var root = fixture.RootElement;
-    var bytes = Convert.FromBase64String(root.GetProperty("headerBase64").GetString()!);
-    if (bytes.Length != 144 || Convert.ToHexString(SHA256.HashData(bytes)) != root.GetProperty("sha256").GetString())
-        throw new InvalidOperationException("Real TOC bytes/hash disagree with desktop fixture");
-    using var archive = new FByteArchive(root.GetProperty("logicalPath").GetString()!, bytes);
-    var header = new FIoStoreTocHeader(archive);
-    var expected = root.GetProperty("expected");
-    if ((byte)header.Version != expected.GetProperty("version").GetByte() ||
-        header.TocHeaderSize != expected.GetProperty("headerSize").GetUInt32() ||
-        header.TocEntryCount != expected.GetProperty("entries").GetUInt32() ||
-        header.TocCompressedBlockEntryCount != expected.GetProperty("compressionBlocks").GetUInt32() ||
-        header.CompressionBlockSize != expected.GetProperty("compressionBlockSize").GetUInt32() ||
-        header.DirectoryIndexSize != expected.GetProperty("directoryIndexSize").GetUInt32())
-        throw new InvalidOperationException("Browser TOC fields disagree with desktop CUE4Parse");
-    Console.WriteLine($"CUE4PARSE_STAGE|real-utoc-header|supported|{root.GetProperty("logicalPath").GetString()}|{root.GetProperty("sha256").GetString()}");
+    foreach (var item in fixture.RootElement.GetProperty("fixtures").EnumerateArray())
+    {
+        var bytes = Convert.FromBase64String(item.GetProperty("tocBase64").GetString()!);
+        if (bytes.Length < 144 || bytes.Length > 2 * 1024 * 1024 || Hash(bytes) != item.GetProperty("tocSha256").GetString())
+            throw new InvalidDataException("TOC bytes/hash disagree with desktop fixture");
+        using var archive = new FByteArchive(item.GetProperty("logicalPath").GetString()!, bytes, new VersionContainer(EGame.GAME_UE6_0));
+        var toc = new FIoStoreTocResource(archive, EIoStoreTocReadOptions.ReadDirectoryIndex);
+        if (toc.EncryptionMethod != EIoEncryptionMethod.AES_CTR || toc.Header.EncryptionKeyGuid.ToString() != item.GetProperty("encryptionKeyGuid").GetString())
+            throw new InvalidDataException("Browser TOC encryption metadata disagrees with desktop");
+        var key = Convert.FromHexString(item.GetProperty("publicKeyHex").GetString()!);
+        var indexIv = toc.EncryptionIVs[^1].Bytes;
+        if (Convert.ToHexString(indexIv) != item.GetProperty("indexIvHex").GetString())
+            throw new InvalidDataException("Browser index IV disagrees with desktop");
+        var indexPlain = BrowserAesCtr.Transform(toc.GetDirectoryIndexBuffer()!, key, indexIv);
+        if (Hash(indexPlain) != item.GetProperty("indexSha256").GetString())
+            throw new InvalidDataException("Real index CTR bytes disagree with desktop CUE4Parse");
+        using var indexArchive = new FByteArchive("index", indexPlain);
+        if (indexArchive.ReadFString() != item.GetProperty("mountPoint").GetString())
+            throw new InvalidDataException("Index mount point mismatch");
+        Console.WriteLine($"CUE4PARSE_STAGE|real-toc-ctr-index|supported|{archive.Name}|{Hash(indexPlain)}");
+
+        var expected = item.GetProperty("block");
+        var blockIndex = expected.GetProperty("index").GetInt32();
+        var block = toc.CompressionBlocks[blockIndex];
+        var encrypted = Convert.FromBase64String(expected.GetProperty("encryptedBase64").GetString()!);
+        if (encrypted.Length > 256 * 1024 || block.UncompressedSize > 256 * 1024 || encrypted.Length != block.CompressedSize ||
+            Hash(encrypted) != expected.GetProperty("encryptedSha256").GetString() ||
+            block.UncompressedSize != expected.GetProperty("uncompressedSize").GetUInt32() ||
+            (long)((ulong)block.Offset % toc.Header.PartitionSize) != expected.GetProperty("offset").GetInt64())
+            throw new InvalidDataException("Browser compression range disagrees with desktop");
+        var blockIv = toc.EncryptionIVs[blockIndex].Bytes;
+        if (Convert.ToHexString(blockIv) != expected.GetProperty("ivHex").GetString())
+            throw new InvalidDataException("Browser block IV mismatch");
+        var decrypted = BrowserAesCtr.Transform(encrypted, key, blockIv);
+        if (Hash(decrypted) != expected.GetProperty("decryptedSha256").GetString() || Hash(encrypted) != expected.GetProperty("encryptedSha256").GetString())
+            throw new InvalidDataException("Real block CTR bytes mismatch or input mutation");
+        // Prefixes include non-aligned CTR tails; each must equal the desktop result.
+        foreach (var length in new[] { 1, 15, 17, Math.Min(4097, encrypted.Length) }.Where(n => n <= encrypted.Length))
+            if (!BrowserAesCtr.Transform(encrypted[..length], key, blockIv).SequenceEqual(decrypted[..length]))
+                throw new InvalidDataException("CTR partial-block output mismatch");
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        try { BrowserAesCtr.Transform(encrypted, key, blockIv, cancelled.Token); throw new InvalidOperationException("CTR ignored cancellation"); }
+        catch (OperationCanceledException) { }
+        var method = toc.CompressionMethods[block.CompressionMethodIndex];
+        if (method.ToString() != expected.GetProperty("method").GetString()) throw new InvalidDataException("Compression method mismatch");
+        var decoded = Compression.Decompress(decrypted, checked((int)block.UncompressedSize), method);
+        if (Hash(decoded) != expected.GetProperty("decodedSha256").GetString())
+            throw new InvalidDataException("Real block decompressed bytes disagree with desktop CUE4Parse");
+        Console.WriteLine($"CUE4PARSE_STAGE|real-ucas-block|supported|{archive.Name}|{method}|{decoded.Length}|{Hash(decoded)}");
+    }
 }
 
 Console.WriteLine("CUE4PARSE_ASSET_PARSING_UNPROVEN");
 Console.WriteLine("CUE4PARSE_BROWSER_WASM_OK");
 
 return 0;
+
+static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
 static void Probe(string name, Action action)
 {

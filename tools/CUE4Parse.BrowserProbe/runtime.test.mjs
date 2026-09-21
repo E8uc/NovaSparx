@@ -44,6 +44,9 @@ try {
   assert.ok(logs.some(line => line.includes('CUE4PARSE_BROWSER_WASM_OK')), 'Managed browser entrypoint did not execute');
   assert.ok(result.wasmResources.length > 0, 'No WASM fetched by browser');
   assert.equal(result.assetParsingProven, false, 'A runtime smoke test cannot prove real asset parsing');
+  assert.equal(logs.filter(line => line.includes('CUE4PARSE_STAGE|real-toc-ctr-index|supported|')).length, 2, 'Both real encrypted indexes must pass');
+  assert.equal(logs.filter(line => line.includes('CUE4PARSE_STAGE|real-ucas-block|supported|')).length, 2, 'Both real UCAS blocks must pass');
+  result.realContainerBytesProven = true;
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=reject-partial-block`);
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
