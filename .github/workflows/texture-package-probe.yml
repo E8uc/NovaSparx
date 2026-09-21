@@ -76,6 +76,7 @@ jobs:
       - name: Verify and execute browser bundle
         env:
           REQUIRE_TEXTURE: "1"
+          REQUIRE_LIVE_BUILD_PATCH: "1"
         shell: bash
         run: |
           set -euo pipefail
