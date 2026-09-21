@@ -14,6 +14,15 @@ let liveManifestRequests = 0;
 let liveChunkRequests = 0;
 let liveChunkBytes = 0;
 const liveChunkPaths = [];
+let relayRequests = 0;
+let relayBytes = 0;
+const RELAY_MAX_RANGE_BYTES = 4 * 1024 * 1024;
+const RELAY_ALLOWED_HOSTS = new Set([
+  'egdownload.fastly-edge.com',
+  'download.epicgames.com',
+  'fortnite-direct.dillycdn.com',
+  'stormforge.dillycdn.com'
+]);
 
 async function fetchBounded(url, maxBytes, label) {
   const response = await fetch(url, {
@@ -199,6 +208,71 @@ const server = http.createServer(async (req, res) => {
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Content-Length', String(bytes.byteLength));
+      res.end(Buffer.from(bytes));
+      return;
+    }
+
+    if (pathname === '/edge/range') {
+      const requestUrl = new URL(req.url, 'http://localhost');
+      let target;
+      try {
+        target = new URL(requestUrl.searchParams.get('url') || '');
+      } catch {
+        res.writeHead(400).end('Invalid relay URL');
+        return;
+      }
+
+      const start = Number(requestUrl.searchParams.get('start'));
+      const end = Number(requestUrl.searchParams.get('end'));
+      if (
+        target.protocol !== 'https:' ||
+        !RELAY_ALLOWED_HOSTS.has(target.hostname.toLowerCase()) ||
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(end) ||
+        start < 0 ||
+        end < start ||
+        end - start + 1 > RELAY_MAX_RANGE_BYTES
+      ) {
+        res.writeHead(400).end('Invalid relay range');
+        return;
+      }
+
+      const upstream = await fetch(target, {
+        method: 'GET',
+        redirect: 'error',
+        headers: {
+          range: `bytes=${start}-${end}`,
+          accept: 'application/octet-stream,*/*;q=0.8'
+        }
+      });
+
+      if (![200, 206].includes(upstream.status)) {
+        res.writeHead(502).end(`Relay upstream HTTP ${upstream.status}`);
+        return;
+      }
+
+      const bytes = new Uint8Array(await upstream.arrayBuffer());
+      const expected = end - start + 1;
+      if (bytes.byteLength < 1 || bytes.byteLength > expected) {
+        res.writeHead(502).end('Relay source exceeded requested byte window');
+        return;
+      }
+
+      relayRequests += 1;
+      relayBytes += bytes.byteLength;
+
+      res.statusCode = upstream.status === 206 ? 206 : 200;
+      res.setHeader(
+        'Content-Type',
+        upstream.headers.get('content-type') || 'application/octet-stream'
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', String(bytes.byteLength));
+
+      const contentRange = upstream.headers.get('content-range');
+      if (contentRange) res.setHeader('Content-Range', contentRange);
+
       res.end(Buffer.from(bytes));
       return;
     }
@@ -553,6 +627,172 @@ try {
       JSON.stringify({
         fixtures: liveTextures,
         network: result.liveTextureNetwork
+      })
+    );
+  }
+
+  if (process.env.REQUIRE_RELAY_TEXTURE === '1') {
+    assert.ok(
+      Array.isArray(result.textureFixtures) && result.textureFixtures.length === 3,
+      'Relay Texture proof requires the established three references'
+    );
+
+    const live =
+      await (liveManifestPromise ||= resolveRawManifest(LIVE_MANIFEST_ENDPOINT));
+
+    const relayBefore = {
+      requests: relayRequests,
+      bytes: relayBytes
+    };
+
+    const relayTextures = await page.evaluate(
+      async ({ manifestUrl, chunkBase }) => {
+        return await new Promise((resolve, reject) => {
+          const params = new URLSearchParams({
+            test: 'live-texture-relay',
+            manifest: manifestUrl,
+            chunkBase,
+            relay: '/edge/range'
+          });
+
+          const worker = new Worker(
+            '/worker.js?' + params.toString(),
+            { type: 'module' }
+          );
+
+          const pending = [];
+          const rows = [];
+          const timeout = setTimeout(() => {
+            worker.terminate();
+            reject(new Error('Relayed live Texture worker timed out'));
+          }, 300000);
+
+          const fail = error => {
+            clearTimeout(timeout);
+            worker.terminate();
+            reject(error instanceof Error ? error : new Error(String(error)));
+          };
+
+          worker.onerror = event => {
+            fail(new Error(event.message || 'Relayed live Texture worker failed'));
+          };
+
+          worker.onmessage = event => {
+            const message = event.data || {};
+
+            if (message.type === 'error') {
+              fail(new Error(message.error || 'Relayed live Texture worker failed'));
+              return;
+            }
+
+            if (message.type === 'pixels') {
+              const task = (async () => {
+                const { path, width, height, pixels } = message;
+
+                if (!(pixels instanceof ArrayBuffer)) {
+                  throw new Error('Relayed Texture worker did not transfer an ArrayBuffer');
+                }
+
+                if (
+                  width <= 0 ||
+                  height <= 0 ||
+                  width * height > 65536 ||
+                  pixels.byteLength !== width * height * 4
+                ) {
+                  throw new Error('Relayed Texture worker returned invalid RGBA pixels');
+                }
+
+                const hash = await crypto.subtle.digest('SHA-256', pixels);
+                const pixelsSha256 = Array.from(
+                  new Uint8Array(hash),
+                  value => value.toString(16).padStart(2, '0')
+                ).join('').toUpperCase();
+
+                const canvas = document.createElement('canvas');
+                canvas.id = `relay-texture-${rows.length}`;
+                canvas.width = width;
+                canvas.height = height;
+                canvas.getContext('2d').putImageData(
+                  new ImageData(new Uint8ClampedArray(pixels), width, height),
+                  0,
+                  0
+                );
+                document.body.append(canvas);
+
+                rows.push({ path, width, height, pixelsSha256 });
+              })();
+
+              pending.push(task);
+              return;
+            }
+
+            if (message.type === 'done') {
+              (async () => {
+                try {
+                  await Promise.all(pending);
+                  if (message.exitCode !== 0) {
+                    throw new Error(
+                      `Relayed live Texture worker exited with ${message.exitCode}`
+                    );
+                  }
+                  clearTimeout(timeout);
+                  worker.terminate();
+                  resolve(rows);
+                } catch (error) {
+                  fail(error);
+                }
+              })();
+            }
+          };
+        });
+      },
+      {
+        manifestUrl: live.source,
+        chunkBase: LIVE_CHUNK_BASE.toString()
+      }
+    );
+
+    assert.equal(relayTextures.length, 3);
+    assert.equal(new Set(relayTextures.map(item => item.path)).size, 3);
+
+    const expectedByPath =
+      new Map(
+        result.textureFixtures.map(item => [item.path, item])
+      );
+
+    for (const [index, item] of relayTextures.entries()) {
+      const expected = expectedByPath.get(item.path);
+      assert.ok(expected, `Unexpected relayed Texture path: ${item.path}`);
+      assert.equal(item.width, expected.width);
+      assert.equal(item.height, expected.height);
+      assert.equal(
+        item.pixelsSha256,
+        expected.pixelsSha256,
+        'Relayed public Fortnite bytes must decode to the established pixels'
+      );
+
+      await page.locator(`#relay-texture-${index}`).screenshot({
+        path: `relay-texture-${index}.png`
+      });
+    }
+
+    const relayNetwork = {
+      requests: relayRequests - relayBefore.requests,
+      bytes: relayBytes - relayBefore.bytes
+    };
+
+    assert.ok(relayNetwork.requests > 0, 'Relayed Texture proof never used the range relay');
+    assert.ok(relayNetwork.bytes > 0, 'Relayed Texture proof transferred no relay bytes');
+
+    result.relayTextureParsingProven = true;
+    result.relayTextureFixtures = relayTextures;
+    result.relayTextureNetwork = relayNetwork;
+
+    console.log(
+      'RELAY_TEXTURE_WORKER_PROVEN',
+      JSON.stringify({
+        fixtures: relayTextures,
+        network: relayNetwork
       })
     );
   }
