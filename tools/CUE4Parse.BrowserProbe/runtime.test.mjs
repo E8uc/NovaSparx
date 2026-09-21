@@ -13,6 +13,7 @@ let liveManifestPromise = null;
 let liveManifestRequests = 0;
 let liveChunkRequests = 0;
 let liveChunkBytes = 0;
+const liveChunkPaths = [];
 
 async function fetchBounded(url, maxBytes, label) {
   const response = await fetch(url, {
@@ -174,6 +175,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/live/chunk/')) {
       const relative = decodeURIComponent(pathname.slice('/live/chunk/'.length));
+      if (!liveChunkPaths.includes(relative)) liveChunkPaths.push(relative);
       if (!relative || relative.startsWith('/') || relative.includes('..')) {
         res.writeHead(400).end();
         return;
@@ -553,6 +555,100 @@ try {
         network: result.liveTextureNetwork
       })
     );
+  }
+
+  if (process.env.REQUIRE_PUBLIC_SOURCE_CORS === '1') {
+    const live = await (liveManifestPromise ||= resolveRawManifest(LIVE_MANIFEST_ENDPOINT));
+    assert.ok(liveChunkPaths.length > 0, 'No live BuildPatch chunk path was observed for CORS proof');
+
+    const cors = await page.evaluate(async ({ rawManifestUrl, chunkUrl }) => {
+      const fetchJson = async (url, label) => {
+        const response = await fetch(url, {
+          mode: 'cors',
+          credentials: 'omit',
+          cache: 'no-store',
+          headers: { accept: 'application/json,*/*;q=0.8' }
+        });
+        if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
+        const text = await response.text();
+        if (text.length > 4 * 1024 * 1024) throw new Error(`${label} exceeded JSON budget`);
+        return { status: response.status, json: JSON.parse(text) };
+      };
+
+      const probeRange = async (url, label) => {
+        const response = await fetch(url, {
+          mode: 'cors',
+          credentials: 'omit',
+          cache: 'no-store',
+          headers: {
+            range: 'bytes=0-255',
+            accept: 'application/octet-stream,*/*;q=0.8'
+          }
+        });
+        if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
+        const reader = response.body?.getReader?.();
+        if (!reader) {
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (!bytes.byteLength) throw new Error(`${label} returned no bytes`);
+          return { status: response.status, bytes: bytes.byteLength };
+        }
+        const first = await reader.read();
+        await reader.cancel('cors-probe-complete').catch(() => {});
+        if (first.done || !first.value?.byteLength) throw new Error(`${label} returned no bytes`);
+        return { status: response.status, bytes: first.value.byteLength };
+      };
+
+      const findUsmap = root => {
+        let found = '';
+        const walk = value => {
+          if (found) return;
+          if (typeof value === 'string') {
+            if (/^https:\/\//i.test(value) && /usmap/i.test(value)) found = value;
+            return;
+          }
+          if (Array.isArray(value)) {
+            for (const item of value) walk(item);
+            return;
+          }
+          if (value && typeof value === 'object') {
+            for (const item of Object.values(value)) walk(item);
+          }
+        };
+        walk(root);
+        return found;
+      };
+
+      const manifestMeta = await fetchJson(
+        'https://export-service-new.dillyapis.com/v1/manifests',
+        'Dilly manifest metadata'
+      );
+      const aes = await fetchJson(
+        'https://export-service-new.dillyapis.com/v1/aes',
+        'Dilly AES metadata'
+      );
+      const mappingsMeta = await fetchJson(
+        'https://api.fortniteapi.com/v1/mappings',
+        'FortniteAPI mappings metadata'
+      );
+      const mappingUrl = findUsmap(mappingsMeta.json);
+      if (!mappingUrl) throw new Error('Mappings metadata exposed no HTTPS usmap URL');
+
+      return {
+        manifestMetadataStatus: manifestMeta.status,
+        aesStatus: aes.status,
+        mappingsMetadataStatus: mappingsMeta.status,
+        rawManifest: await probeRange(rawManifestUrl, 'Raw Fortnite manifest'),
+        mappings: await probeRange(mappingUrl, 'Fortnite mappings file'),
+        buildPatchChunk: await probeRange(chunkUrl, 'Epic BuildPatch chunk')
+      };
+    }, {
+      rawManifestUrl: live.source,
+      chunkUrl: new URL(liveChunkPaths[0], LIVE_CHUNK_BASE).toString()
+    });
+
+    result.publicSourceCorsProven = true;
+    result.publicSourceCors = cors;
+    console.log('PUBLIC_SOURCE_CORS_PROVEN', JSON.stringify(cors));
   }
 
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
