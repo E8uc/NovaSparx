@@ -287,7 +287,7 @@ try {
         !Number.isInteger(height) ||
         width <= 0 ||
         height <= 0 ||
-        width * height > 65536
+        width * height > 2048 * 2048
       ) {
         throw new Error("Texture pixel budget exceeded");
       }
@@ -330,7 +330,9 @@ try {
 
   if (
     test ===
-      "live-texture-relay"
+      "live-texture-relay" ||
+    test ===
+      "resolve-texture-relay"
   ) {
     restoreFetch =
       installRangeRelayFetch(
@@ -372,7 +374,53 @@ try {
                   ""
                 )
             ]
-          : [];
+          : test ===
+              "resolve-texture-relay"
+            ? [
+                "--resolve-texture-path=" +
+                  String(
+                    workerUrl.searchParams
+                      .get("path") ||
+                    ""
+                  ),
+                "--resolve-texture-toc=" +
+                  String(
+                    workerUrl.searchParams
+                      .get("toc") ||
+                    ""
+                  ),
+                "--resolve-texture-manifest-url=" +
+                  String(
+                    workerUrl.searchParams
+                      .get("manifest") ||
+                    ""
+                  ),
+                "--resolve-texture-chunk-base=" +
+                  String(
+                    workerUrl.searchParams
+                      .get("chunkBase") ||
+                    ""
+                  ),
+                "--resolve-texture-mappings-api=" +
+                  String(
+                    workerUrl.searchParams
+                      .get("mappingsApi") ||
+                    "https://api.fortniteapi.com/v1/mappings"
+                  ),
+                "--resolve-texture-aes-api=" +
+                  String(
+                    workerUrl.searchParams
+                      .get("aesApi") ||
+                    "https://export-service-new.dillyapis.com/v1/aes"
+                  ),
+                "--resolve-texture-max-size=" +
+                  String(
+                    workerUrl.searchParams
+                      .get("maxSize") ||
+                    "1024"
+                  )
+              ]
+            : [];
 
   const exitCode =
     await runMain(
