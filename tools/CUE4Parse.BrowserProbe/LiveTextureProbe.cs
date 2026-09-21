@@ -880,7 +880,7 @@ internal static class LiveTextureProbe
     private static FAesKey? FindKey(
         IoStoreReader reader,
         IReadOnlyList<
-            KeyValuePair<FGuid, FAesKey>>
+            KeyValuePair<CUE4Parse.UE4.Objects.Core.Misc.FGuid, FAesKey>>
             keys)
     {
         if (!reader.IsEncrypted)
