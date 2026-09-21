@@ -28,7 +28,9 @@ internal static class LiveTextureProbe
         typeof(UTexture2D))]
     public static async Task RunAsync(
         string baseUrl,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? manifestUrl = null,
+        string? chunkBaseUrl = null)
     {
         if (!OperatingSystem.IsBrowser())
             throw new PlatformNotSupportedException(
@@ -43,6 +45,29 @@ internal static class LiveTextureProbe
 
         if (!baseUrl.EndsWith("/", StringComparison.Ordinal))
             root = new Uri(baseUrl + "/", UriKind.Absolute);
+
+        var manifestSource =
+            string.IsNullOrWhiteSpace(
+                manifestUrl)
+                ? new Uri(
+                    root,
+                    "manifest")
+                : RequireHttpUri(
+                    manifestUrl,
+                    "Live Texture manifest");
+
+        var chunkSource =
+            string.IsNullOrWhiteSpace(
+                chunkBaseUrl)
+                ? new Uri(
+                    root,
+                    "chunk/")
+                    .ToString()
+                : RequireHttpUri(
+                    chunkBaseUrl,
+                    "Live Texture chunk base",
+                    ensureTrailingSlash: true)
+                    .ToString();
 
         using var referenceStream =
             typeof(LiveTextureProbe).Assembly
@@ -90,7 +115,7 @@ internal static class LiveTextureProbe
         var manifestBytes =
             await GetBytesAsync(
                 http,
-                new Uri(root, "manifest"),
+                manifestSource,
                 MaxManifestBytes,
                 "Live Fortnite manifest",
                 cancellationToken);
@@ -123,10 +148,7 @@ internal static class LiveTextureProbe
                 ManifestCacheDirectory =
                     manifestCache,
                 ChunkBaseUrl =
-                    new Uri(
-                        root,
-                        "chunk/")
-                    .ToString(),
+                    chunkSource,
                 Client =
                     http,
                 CacheChunksAsIs =
@@ -943,6 +965,37 @@ internal static class LiveTextureProbe
         }
 
         return matches[0];
+    }
+
+    private static Uri RequireHttpUri(
+        string value,
+        string label,
+        bool ensureTrailingSlash = false)
+    {
+        if (
+            !Uri.TryCreate(
+                value,
+                UriKind.Absolute,
+                out var uri) ||
+            uri.Scheme is not ("http" or "https"))
+        {
+            throw new InvalidOperationException(
+                $"{label} requires an absolute HTTP URL.");
+        }
+
+        if (
+            ensureTrailingSlash &&
+            !uri.AbsoluteUri.EndsWith(
+                "/",
+                StringComparison.Ordinal))
+        {
+            uri =
+                new Uri(
+                    uri.AbsoluteUri + "/",
+                    UriKind.Absolute);
+        }
+
+        return uri;
     }
 
     private static async Task<byte[]>
