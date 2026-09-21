@@ -1,0 +1,11 @@
+{
+  "schema": "novasparx.asset-locations.v1",
+  "builtAt": "2026-09-21T16:00:02.6905408+00:00",
+  "fortniteVersion": "\u002B\u002BFortnite\u002BRelease-42.20-CL-58011042-Windows",
+  "hash": "fnv1a32-low-byte",
+  "entries": 2094132,
+  "containers": 55,
+  "shards": 256,
+  "bytes": 42479672,
+  "path": "{shard}.json.gz"
+}

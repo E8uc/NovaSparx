@@ -1,6 +1,6 @@
 {
   "schema": "novasparx.asset-references.v1",
-  "builtAt": "2026-09-21T10:42:44.2716417+00:00",
+  "builtAt": "2026-09-21T16:00:02.8579214+00:00",
   "fortniteVersion": "\u002B\u002BFortnite\u002BRelease-42.20-CL-58011042-Windows",
   "available": false,
   "reason": "AssetRegistry.bin is not exposed by the current live manifest/provider.",
