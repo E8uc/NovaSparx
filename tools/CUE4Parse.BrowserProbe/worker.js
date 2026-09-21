@@ -54,13 +54,21 @@ try {
       .searchParams
       .get("test");
 
+  const liveBase =
+    new URL("./live/", globalThis.location.href).toString();
+
   const args =
     test === "live-buildpatch"
       ? [
           "--live-buildpatch-base=" +
-          new URL("./live/", globalThis.location.href).toString()
+          liveBase
         ]
-      : [];
+      : test === "live-texture"
+        ? [
+            "--live-texture-base=" +
+            liveBase
+          ]
+        : [];
 
   const exitCode =
     await runMain(
