@@ -64,7 +64,6 @@ jobs:
           fi
           dotnet publish tools/CUE4Parse.BrowserProbe/CUE4Parse.BrowserProbe.csproj --configuration Release "${args[@]}"
 
-
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -77,6 +76,8 @@ jobs:
       - name: Verify and execute browser bundle
         env:
           REQUIRE_TEXTURE: "1"
+          REQUIRE_LIVE_BUILD_PATCH: "1"
+          REQUIRE_LIVE_TEXTURE: "1"
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +97,7 @@ jobs:
           echo "Browser probe WASM: $wasm_file"
 
           cp tools/CUE4Parse.BrowserProbe/main.js "$bundle/main.js"
-
+          cp tools/CUE4Parse.BrowserProbe/worker.js "$bundle/worker.js"
 
           node tools/CUE4Parse.BrowserProbe/runtime.test.mjs "$bundle"
 
@@ -108,5 +109,7 @@ jobs:
           path: |
             browser-runtime-proof.json
             native-texture-*.png
+            worker-texture-*.png
+            live-texture-*.png
             tools/CUE4Parse.BrowserProbe/texture-fixture.json
             tools/CUE4Parse.BrowserProbe/fixture.json

@@ -4,12 +4,202 @@ import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
+const LIVE_MANIFEST_ENDPOINT = 'https://export-service-new.dillyapis.com/v1/manifests';
+const LIVE_CHUNK_BASE = new URL('https://egdownload.fastly-edge.com/Builds/Fortnite/CloudDir/');
+const LIVE_MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
+const LIVE_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+
+let liveManifestPromise = null;
+let liveManifestRequests = 0;
+let liveChunkRequests = 0;
+let liveChunkBytes = 0;
+
+async function fetchBounded(url, maxBytes, label) {
+  const response = await fetch(url, {
+    redirect: 'follow',
+    headers: {
+      accept: 'application/json,application/octet-stream,*/*;q=0.8'
+    }
+  });
+  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (declared > maxBytes) throw new Error(`${label} exceeded the declared byte budget`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > maxBytes) throw new Error(`${label} exceeded the byte budget`);
+  return bytes;
+}
+
+function looksLikeRawManifest(bytes) {
+  if (bytes.byteLength < 16) return false;
+  for (const value of bytes) {
+    if (value === 9 || value === 10 || value === 13 || value === 32) continue;
+    return value !== 0x7b && value !== 0x5b;
+  }
+  return false;
+}
+
+function collectManifestCandidates(root) {
+  const urls = new Map();
+  const ids = new Map();
+
+  const addUrl = (value, score) => {
+    try {
+      const url = new URL(String(value || ''));
+      if (url.protocol !== 'https:') return;
+      const key = url.toString();
+      urls.set(key, Math.max(urls.get(key) ?? -Infinity, score));
+    } catch {}
+  };
+
+  const addId = (value, score) => {
+    const id = String(value ?? '').trim();
+    if (!id || id.length > 240) return;
+    ids.set(id, Math.max(ids.get(id) ?? -Infinity, score));
+  };
+
+  const walk = node => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+
+    const objectText = JSON.stringify(node).toLowerCase();
+    let baseScore = 0;
+    if (objectText.includes('windows')) baseScore += 40;
+    if (objectText.includes('fortnite')) baseScore += 25;
+    if (objectText.includes('live') || objectText.includes('latest')) baseScore += 10;
+    if (objectText.includes('android') || objectText.includes('ios') || objectText.includes('mac')) baseScore -= 40;
+    if (objectText.includes('studio') || objectText.includes('uefn')) baseScore -= 15;
+
+    for (const [rawKey, value] of Object.entries(node)) {
+      const key = rawKey.toLowerCase();
+
+      if (typeof value === 'string') {
+        const lower = value.toLowerCase();
+        if (
+          lower.includes('.manifest') ||
+          key.includes('manifest') ||
+          key.includes('download')
+        ) {
+          addUrl(value, baseScore + (lower.includes('.manifest') ? 80 : 0));
+        }
+
+        if (key === 'manifestid' || key === 'manifest_id' || key === 'id') {
+          addId(value, baseScore);
+        }
+      } else if (
+        typeof value === 'number' &&
+        (key === 'manifestid' || key === 'manifest_id' || key === 'id')
+      ) {
+        addId(value, baseScore);
+      }
+
+      walk(value);
+    }
+  };
+
+  walk(root);
+
+  return {
+    urls: [...urls.entries()]
+      .map(([url, score]) => ({ url, score }))
+      .sort((a, b) => b.score - a.score),
+    ids: [...ids.entries()]
+      .map(([id, score]) => ({ id, score }))
+      .sort((a, b) => b.score - a.score)
+  };
+}
+
+async function resolveRawManifest(url, visited = new Set(), depth = 0) {
+  if (depth > 5) throw new Error('Live manifest recursion limit reached');
+  const normalized = new URL(url).toString();
+  if (visited.has(normalized)) throw new Error('Live manifest source loop detected');
+  visited.add(normalized);
+
+  const bytes = await fetchBounded(normalized, LIVE_MAX_MANIFEST_BYTES, 'Live manifest source');
+  if (looksLikeRawManifest(bytes)) return { bytes, source: normalized };
+
+  let data;
+  try {
+    data = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error('Live manifest metadata could not be decoded');
+  }
+
+  const candidates = collectManifestCandidates(data);
+
+  for (const candidate of candidates.urls) {
+    if (candidate.url === normalized) continue;
+    try {
+      return await resolveRawManifest(candidate.url, visited, depth + 1);
+    } catch {}
+  }
+
+  if (!normalized.toLowerCase().endsWith('.manifest')) {
+    const base = normalized.replace(/\/+$/, '');
+    for (const candidate of candidates.ids) {
+      try {
+        return await resolveRawManifest(
+          base + '/' + encodeURIComponent(candidate.id),
+          visited,
+          depth + 1
+        );
+      } catch {}
+    }
+  }
+
+  throw new Error('No raw current Fortnite manifest could be resolved');
+}
+
 const bundle = path.resolve(process.argv[2] || '');
 assert.ok(fs.existsSync(path.join(bundle, '_framework/dotnet.js')), 'Pass the published AppBundle directory');
 const logs = [];
 let wasmBytes = 0;
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
+
+  try {
+    if (pathname === '/live/manifest') {
+      liveManifestRequests += 1;
+      const live = await (liveManifestPromise ||= resolveRawManifest(LIVE_MANIFEST_ENDPOINT));
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Length', String(live.bytes.byteLength));
+      res.setHeader('X-NovaSparx-Live-Source', live.source);
+      res.end(Buffer.from(live.bytes));
+      return;
+    }
+
+    if (pathname.startsWith('/live/chunk/')) {
+      const relative = decodeURIComponent(pathname.slice('/live/chunk/'.length));
+      if (!relative || relative.startsWith('/') || relative.includes('..')) {
+        res.writeHead(400).end();
+        return;
+      }
+
+      const upstream = new URL(relative, LIVE_CHUNK_BASE);
+      if (!upstream.toString().startsWith(LIVE_CHUNK_BASE.toString())) {
+        res.writeHead(403).end();
+        return;
+      }
+
+      liveChunkRequests += 1;
+      const bytes = await fetchBounded(
+        upstream,
+        LIVE_MAX_CHUNK_BYTES,
+        'Live BuildPatch chunk'
+      );
+      liveChunkBytes += bytes.byteLength;
+
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Length', String(bytes.byteLength));
+      res.end(Buffer.from(bytes));
+      return;
+    }
   if (pathname === '/') {
     res.setHeader('Content-Type', 'text/html');
     res.end('<!doctype html><meta charset="utf-8"><title>CUE4Parse browser runtime proof</title><script type="module" src="/main.js"></script>');
@@ -24,6 +214,11 @@ const server = http.createServer((req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.end(data);
   } catch { res.writeHead(404).end(); }
+  } catch (error) {
+    res.statusCode = 502;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end(String(error?.stack || error));
+  }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
@@ -59,7 +254,307 @@ try {
     }
     result.textureFixtures = native;
     console.log('REAL_TEXTURE_VISIBLE', JSON.stringify(native));
+
+    const workerNative = await page.evaluate(async () => {
+      return await new Promise((resolve, reject) => {
+        const worker = new Worker('/worker.js', { type: 'module' });
+        const pending = [];
+        const rows = [];
+        const timeout = setTimeout(() => {
+          worker.terminate();
+          reject(new Error('Texture worker proof timed out'));
+        }, 120000);
+
+        const finishError = (error) => {
+          clearTimeout(timeout);
+          worker.terminate();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+
+        worker.onerror = event => {
+          finishError(new Error(event.message || 'Texture worker failed'));
+        };
+
+        worker.onmessage = async event => {
+          const message = event.data || {};
+          if (message.type === 'error') {
+            finishError(new Error(message.error || 'Texture worker failed'));
+            return;
+          }
+
+          if (message.type === 'pixels') {
+            const task = (async () => {
+              const { path, width, height, pixels } = message;
+              if (!(pixels instanceof ArrayBuffer)) throw new Error('Worker did not transfer an ArrayBuffer');
+              if (width <= 0 || height <= 0 || pixels.byteLength !== width * height * 4) {
+                throw new Error('Worker RGBA payload is invalid');
+              }
+
+              const hash = await crypto.subtle.digest('SHA-256', pixels);
+              const pixelsSha256 = Array.from(new Uint8Array(hash), n => n.toString(16).padStart(2, '0')).join('').toUpperCase();
+
+              const canvas = document.createElement('canvas');
+              canvas.id = `worker-texture-${rows.length}`;
+              canvas.width = width;
+              canvas.height = height;
+              canvas.getContext('2d').putImageData(
+                new ImageData(new Uint8ClampedArray(pixels), width, height),
+                0,
+                0
+              );
+              document.body.append(canvas);
+
+              rows.push({ path, width, height, pixelsSha256 });
+            })();
+            pending.push(task);
+            return;
+          }
+
+          if (message.type === 'done') {
+            try {
+              await Promise.all(pending);
+              if (message.exitCode !== 0) throw new Error(`Texture worker exited with ${message.exitCode}`);
+              clearTimeout(timeout);
+              worker.terminate();
+              resolve(rows);
+            } catch (error) {
+              finishError(error);
+            }
+          }
+        };
+      });
+    });
+
+    assert.equal(workerNative.length, native.length, 'Worker must render the same three real Texture targets');
+    assert.equal(new Set(workerNative.map(item => item.path)).size, 3, 'Worker must not substitute duplicate assets');
+    const expectedByPath = new Map(native.map(item => [item.path, item]));
+    for (const [index, item] of workerNative.entries()) {
+      const expected = expectedByPath.get(item.path);
+      assert.ok(expected, `Unexpected worker Texture path: ${item.path}`);
+      assert.equal(item.width, expected.width);
+      assert.equal(item.height, expected.height);
+      assert.equal(item.pixelsSha256, expected.pixelsSha256, 'Worker pixels must match the main-thread browser proof and desktop reference');
+      await page.locator(`#worker-texture-${index}`).screenshot({ path: `worker-texture-${index}.png` });
+    }
+
+    const messagesAfterImmediateTermination = await page.evaluate(async () => {
+      const worker = new Worker('/worker.js', { type: 'module' });
+      let messages = 0;
+      worker.onmessage = () => { messages += 1; };
+      worker.terminate();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return messages;
+    });
+    assert.equal(messagesAfterImmediateTermination, 0, 'A terminated parser worker must not publish stale output');
+
+    result.workerTextureFixtures = workerNative;
+    result.workerTextureParsingProven = true;
+    result.workerTerminationProven = true;
+    console.log('REAL_TEXTURE_WORKER_VISIBLE', JSON.stringify(workerNative));
   }
+  if (process.env.REQUIRE_LIVE_BUILD_PATCH === '1') {
+    const liveWorker = await page.evaluate(async () => {
+      return await new Promise((resolve, reject) => {
+        const worker = new Worker('/worker.js?test=live-buildpatch', { type: 'module' });
+        const timeout = setTimeout(() => {
+          worker.terminate();
+          reject(new Error('Live BuildPatch worker proof timed out'));
+        }, 180000);
+
+        const fail = error => {
+          clearTimeout(timeout);
+          worker.terminate();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+
+        worker.onerror = event => {
+          fail(new Error(event.message || 'Live BuildPatch worker failed'));
+        };
+
+        worker.onmessage = event => {
+          const message = event.data || {};
+          if (message.type === 'error') {
+            fail(new Error(message.error || 'Live BuildPatch worker failed'));
+            return;
+          }
+          if (message.type === 'done') {
+            clearTimeout(timeout);
+            worker.terminate();
+            resolve({ exitCode: message.exitCode });
+          }
+        };
+      });
+    });
+
+    assert.equal(liveWorker.exitCode, 0, 'Live BuildPatch worker must exit successfully');
+    assert.ok(liveManifestRequests >= 1, 'Worker did not fetch a live Fortnite manifest');
+    assert.ok(liveChunkRequests >= 1, 'Worker did not fetch any live BuildPatch chunks');
+    assert.ok(liveChunkBytes > 0, 'Worker fetched no live BuildPatch bytes');
+
+    result.liveBuildPatchWorkerProven = true;
+    result.liveBuildPatchNetwork = {
+      manifestRequests: liveManifestRequests,
+      chunkRequests: liveChunkRequests,
+      chunkBytes: liveChunkBytes
+    };
+    console.log('LIVE_BUILDPATCH_WORKER_PROVEN', JSON.stringify(result.liveBuildPatchNetwork));
+  }
+
+  if (process.env.REQUIRE_LIVE_TEXTURE === '1') {
+    assert.ok(
+      Array.isArray(result.textureFixtures) && result.textureFixtures.length === 3,
+      'Live Texture proof requires the established three desktop/browser references'
+    );
+
+    const networkBeforeLiveTexture = {
+      manifestRequests: liveManifestRequests,
+      chunkRequests: liveChunkRequests,
+      chunkBytes: liveChunkBytes
+    };
+
+    const liveTextures = await page.evaluate(async () => {
+      return await new Promise((resolve, reject) => {
+        const worker = new Worker('/worker.js?test=live-texture', { type: 'module' });
+        const pending = [];
+        const rows = [];
+        const timeout = setTimeout(() => {
+          worker.terminate();
+          reject(new Error('Live Texture worker proof timed out'));
+        }, 300000);
+
+        const fail = error => {
+          clearTimeout(timeout);
+          worker.terminate();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        };
+
+        worker.onerror = event => {
+          fail(new Error(event.message || 'Live Texture worker failed'));
+        };
+
+        worker.onmessage = event => {
+          const message = event.data || {};
+
+          if (message.type === 'error') {
+            fail(new Error(message.error || 'Live Texture worker failed'));
+            return;
+          }
+
+          if (message.type === 'pixels') {
+            const task = (async () => {
+              const { path, width, height, pixels } = message;
+
+              if (!(pixels instanceof ArrayBuffer)) {
+                throw new Error('Live Texture worker did not transfer an ArrayBuffer');
+              }
+
+              if (
+                width <= 0 ||
+                height <= 0 ||
+                width * height > 65536 ||
+                pixels.byteLength !== width * height * 4
+              ) {
+                throw new Error('Live Texture worker returned an invalid RGBA payload');
+              }
+
+              const hash = await crypto.subtle.digest('SHA-256', pixels);
+              const pixelsSha256 = Array.from(
+                new Uint8Array(hash),
+                value => value.toString(16).padStart(2, '0')
+              ).join('').toUpperCase();
+
+              const canvas = document.createElement('canvas');
+              canvas.id = `live-texture-${rows.length}`;
+              canvas.width = width;
+              canvas.height = height;
+              canvas.getContext('2d').putImageData(
+                new ImageData(new Uint8ClampedArray(pixels), width, height),
+                0,
+                0
+              );
+              document.body.append(canvas);
+
+              rows.push({ path, width, height, pixelsSha256 });
+            })();
+
+            pending.push(task);
+            return;
+          }
+
+          if (message.type === 'done') {
+            (async () => {
+              try {
+                await Promise.all(pending);
+                if (message.exitCode !== 0) {
+                  throw new Error(`Live Texture worker exited with ${message.exitCode}`);
+                }
+                clearTimeout(timeout);
+                worker.terminate();
+                resolve(rows);
+              } catch (error) {
+                fail(error);
+              }
+            })();
+          }
+        };
+      });
+    });
+
+    assert.equal(liveTextures.length, 3, 'Live Worker must render all three exact Texture targets');
+    assert.equal(new Set(liveTextures.map(item => item.path)).size, 3, 'Live Worker must not substitute duplicate Texture targets');
+
+    const expectedLiveByPath = new Map(
+      result.textureFixtures.map(item => [item.path, item])
+    );
+
+    for (const [index, item] of liveTextures.entries()) {
+      const expected = expectedLiveByPath.get(item.path);
+      assert.ok(expected, `Unexpected live Texture path: ${item.path}`);
+      assert.equal(item.width, expected.width);
+      assert.equal(item.height, expected.height);
+      assert.equal(
+        item.pixelsSha256,
+        expected.pixelsSha256,
+        'Live BuildPatch pixels must match the desktop and captured browser reference'
+      );
+      await page.locator(`#live-texture-${index}`).screenshot({
+        path: `live-texture-${index}.png`
+      });
+    }
+
+    assert.ok(
+      liveManifestRequests > networkBeforeLiveTexture.manifestRequests,
+      'Live Texture Worker did not fetch a current Fortnite manifest'
+    );
+    assert.ok(
+      liveChunkRequests > networkBeforeLiveTexture.chunkRequests,
+      'Live Texture Worker did not fetch current BuildPatch chunks'
+    );
+    assert.ok(
+      liveChunkBytes > networkBeforeLiveTexture.chunkBytes,
+      'Live Texture Worker fetched no additional BuildPatch bytes'
+    );
+
+    result.liveTextureFixtures = liveTextures;
+    result.liveTextureParsingProven = true;
+    result.liveTextureNetwork = {
+      manifestRequests:
+        liveManifestRequests - networkBeforeLiveTexture.manifestRequests,
+      chunkRequests:
+        liveChunkRequests - networkBeforeLiveTexture.chunkRequests,
+      chunkBytes:
+        liveChunkBytes - networkBeforeLiveTexture.chunkBytes
+    };
+
+    console.log(
+      'LIVE_TEXTURE_WORKER_PROVEN',
+      JSON.stringify({
+        fixtures: liveTextures,
+        network: result.liveTextureNetwork
+      })
+    );
+  }
+
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=reject-partial-block`);
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
@@ -73,7 +568,11 @@ try {
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
   const cancelled = await page.evaluate(() => globalThis.cue4parseProbe);
   assert.equal(cancelled.state, 'failed', 'Cancelled CTR must not succeed');
-  assert.match(cancelled.error || '', /OperationCanceled/);
+  assert.match(
+    [cancelled.error || '', ...logs.slice(-40)].join('\n'),
+    /(?:OperationCanceled|TaskCanceled|AggregateException[^\n]*TaskCanceled)/,
+    'Cancelled CTR must surface only as a cancellation failure'
+  );
   result.ctrPreCancellationProven = true;
   console.log('AES_CTR_CANCELLATION_PROVEN_AT_BROWSER_BOUNDARY');
 } finally {
