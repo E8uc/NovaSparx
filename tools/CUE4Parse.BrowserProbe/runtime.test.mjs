@@ -39,7 +39,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
   result = await page.evaluate(() => ({ ...globalThis.cue4parseProbe, userAgent: navigator.userAgent,
-    wasmResources: performance.getEntriesByType('resource').filter(r => r.name.endsWith('.wasm')).map(r => ({url:r.name, bytes:r.encodedBodySize})) }));
+    wasmResources: globalThis.cue4parseProbe.wasmResources || [] }));
   assert.equal(result.state, 'ready', JSON.stringify(result));
   assert.ok(logs.some(line => line.includes('CUE4PARSE_BROWSER_WASM_OK')), 'Managed browser entrypoint did not execute');
   assert.ok(result.wasmResources.length > 0, 'No WASM fetched by browser');
@@ -60,6 +60,25 @@ try {
     result.textureFixtures = native;
     console.log('REAL_TEXTURE_VISIBLE', JSON.stringify(native));
   }
+  assert.equal(result.worker, true, 'Managed parser must execute in a dedicated Worker');
+  const replacement = await page.evaluate(async () => {
+    const controller = new AbortController();
+    const first = globalThis.startCue4ParseProbe('', { signal: controller.signal }).catch(e => e.name);
+    controller.abort();
+    const second = globalThis.startCue4ParseProbe().catch(e => e.name);
+    const third = globalThis.startCue4ParseProbe();
+    const [a, b, c] = await Promise.all([first, second, third]);
+    return { a, b, c, lifecycle: globalThis.probeLifecycle,
+      canvasOwners: Array.from(document.querySelectorAll('canvas'), c => c.dataset.requestId) };
+  });
+  assert.equal(replacement.a, 'AbortError');
+  assert.equal(replacement.b, 'AbortError');
+  assert.equal(replacement.c.state, 'ready');
+  assert.ok(replacement.canvasOwners.every(id => id === String(replacement.c.requestId)), 'Old request changed the UI');
+  assert.equal(replacement.lifecycle.started, replacement.lifecycle.terminated, 'Completed/cancelled WASM Workers must be released');
+  assert.equal(replacement.lifecycle.staleMessages, 0);
+  result.workerReplacementProven = replacement;
+  console.log('WORKER_REPLACEMENT_AND_RELEASE_PROVEN', JSON.stringify(replacement));
   console.log('ACTUAL_BROWSER_RUNTIME_PROOF', JSON.stringify(result));
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=reject-partial-block`);
   await page.waitForFunction(() => ['ready','failed'].includes(globalThis.cue4parseProbe?.state), null, { timeout: 120000 });
