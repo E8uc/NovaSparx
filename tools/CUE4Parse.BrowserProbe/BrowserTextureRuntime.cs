@@ -1660,18 +1660,6 @@ internal static class BrowserTextureRuntime
             declared >
                 maxBytes)
         {
-            try
-            {
-                await response.Content
-                    .ReadAsStream(
-                        cancellationToken)
-                    .Result
-                    .DisposeAsync();
-            }
-            catch
-            {
-            }
-
             throw new InvalidDataException(
                 $"{label} exceeds the browser byte budget.");
         }
