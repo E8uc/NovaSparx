@@ -838,13 +838,13 @@ internal static class LiveTextureProbe
     }
 
     private static IReadOnlyList<
-        KeyValuePair<FGuid, FAesKey>>
+        KeyValuePair<CUE4Parse.UE4.Objects.Core.Misc.FGuid, FAesKey>>
         ReadKeys(
             JsonElement root)
     {
         var keys =
             new Dictionary<
-                FGuid,
+                CUE4Parse.UE4.Objects.Core.Misc.FGuid,
                 FAesKey>();
 
         foreach (var item in
@@ -870,7 +870,7 @@ internal static class LiveTextureProbe
                 continue;
             }
 
-            keys[new FGuid(guid)] =
+            keys[new CUE4Parse.UE4.Objects.Core.Misc.FGuid(guid)] =
                 new FAesKey(key);
         }
 
