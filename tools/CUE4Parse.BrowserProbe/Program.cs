@@ -23,6 +23,14 @@ if (args.Contains("--reject-partial-block"))
     return 3;
 }
 
+if (args.Contains("--cancel-ctr"))
+{
+    using var cancelledCtr = new CancellationTokenSource();
+    cancelledCtr.Cancel();
+    BrowserAesCtr.Transform(new byte[17], new byte[32], new byte[12], cancelledCtr.Token);
+    return 4; // A cancelled request must never return successfully.
+}
+
 Console.WriteLine(typeof(IoStoreReader).Assembly.FullName);
 Console.WriteLine(typeof(IoStoreReader).FullName);
 Console.WriteLine(typeof(FIoStoreTocResource).FullName);
@@ -117,10 +125,6 @@ using (var fixture = JsonDocument.Parse(fixtureStream))
         foreach (var length in new[] { 1, 15, 17, Math.Min(4097, encrypted.Length) }.Where(n => n <= encrypted.Length))
             if (!BrowserAesCtr.Transform(encrypted[..length], key, blockIv).SequenceEqual(decrypted[..length]))
                 throw new InvalidDataException("CTR partial-block output mismatch");
-        using var cancelled = new CancellationTokenSource();
-        cancelled.Cancel();
-        try { BrowserAesCtr.Transform(encrypted, key, blockIv, cancelled.Token); throw new InvalidOperationException("CTR ignored cancellation"); }
-        catch (OperationCanceledException) { }
         var method = toc.CompressionMethods[block.CompressionMethodIndex];
         if (method.ToString() != expected.GetProperty("method").GetString()) throw new InvalidDataException("Compression method mismatch");
         var decoded = Compression.Decompress(decrypted, checked((int)block.UncompressedSize), method);
