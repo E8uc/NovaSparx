@@ -104,6 +104,79 @@ jobs:
 
           node tools/CUE4Parse.BrowserProbe/runtime.test.mjs "$bundle"
 
+      - name: Package production browser runtime
+        if: matrix.source == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          output_root="tools/CUE4Parse.BrowserProbe/bin/Release/net10.0"
+          dotnet_js="$(find "$output_root" -type f -path '*/_framework/dotnet.js' -print -quit)"
+          test -n "$dotnet_js"
+
+          bundle="$(dirname "$(dirname "$dotnet_js")")"
+          package_dir="$RUNNER_TEMP/novasparx-browser-runtime"
+          rm -rf "$package_dir"
+          mkdir -p "$package_dir"
+
+          cp -a "$bundle/." "$package_dir/"
+          rm -f             "$package_dir/texture-fixture.json"             "$package_dir/fixture.json"
+
+          BUNDLE_DIR="$package_dir" GIT_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const crypto = require("crypto");
+
+          const root = process.env.BUNDLE_DIR;
+          const files = [];
+
+          function walk(dir) {
+            for (const name of fs.readdirSync(dir).sort()) {
+              const full = path.join(dir, name);
+              const stat = fs.statSync(full);
+              if (stat.isDirectory()) {
+                walk(full);
+                continue;
+              }
+
+              const relative = path.relative(root, full).replaceAll(path.sep, "/");
+              const bytes = fs.readFileSync(full);
+              files.push({
+                path: relative,
+                bytes: bytes.length,
+                sha256: crypto.createHash("sha256").update(bytes).digest("hex").toUpperCase()
+              });
+            }
+          }
+
+          walk(root);
+
+          fs.writeFileSync(
+            path.join(root, "novasparx-runtime-manifest.json"),
+            JSON.stringify({
+              schema: "novasparx.browser-runtime.v1",
+              source: "CUE4Parse release",
+              commit: process.env.GIT_SHA,
+              files
+            }, null, 2) + "\n"
+          );
+          NODE
+
+          test -f "$package_dir/main.js"
+          test -f "$package_dir/worker.js"
+          test -f "$package_dir/novasparx-runtime-manifest.json"
+          test -f "$package_dir/_framework/dotnet.js"
+          find "$package_dir/_framework" -type f -name '*.wasm' -print -quit | grep -q .
+
+      - name: Upload production browser runtime
+        if: matrix.source == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: novasparx-browser-runtime
+          path: ${{ runner.temp }}/novasparx-browser-runtime
+          if-no-files-found: error
+          compression-level: 6
+
       - name: Preserve runtime evidence
         if: always()
         uses: actions/upload-artifact@v4
