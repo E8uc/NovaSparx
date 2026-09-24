@@ -276,6 +276,15 @@ const server = http.createServer(async (req, res) => {
       res.end(Buffer.from(bytes));
       return;
     }
+  if (/^\/location-index\/(manifest\.json|[a-f0-9]{2}\.json\.gz)$/.test(pathname)) {
+    try {
+      const bytes = fs.readFileSync(path.resolve('web', '.' + pathname));
+      res.setHeader('Content-Type', pathname.endsWith('.gz') ? 'application/gzip' : 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(bytes);
+    } catch { res.writeHead(404).end(); }
+    return;
+  }
   if (pathname === '/') {
     res.setHeader('Content-Type', 'text/html');
     res.end('<!doctype html><meta charset="utf-8"><title>CUE4Parse browser runtime proof</title><script type="module" src="/main.js"></script>');
@@ -836,6 +845,44 @@ try {
           )
       );
 
+    // The requested path must locate its container from the shipped directory
+    // index. The desktop fixture supplies only the independent expected result.
+    const location = await page.evaluate(async ({ assetPath, build }) => {
+      async function bounded(response, max) {
+        if (!response.ok) throw new Error('Location index HTTP ' + response.status);
+        const reader = response.body.getReader();
+        const chunks = []; let size = 0;
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            size += value.length;
+            if (size > max) throw new Error('Location index byte budget exceeded');
+            chunks.push(value);
+          }
+        } finally { await reader.cancel(); reader.releaseLock(); }
+        return new Blob(chunks);
+      }
+      const meta = JSON.parse(await (await bounded(await fetch('/location-index/manifest.json'), 128 * 1024)).text());
+      if (meta.schema !== 'novasparx.asset-locations.v1' || meta.hash !== 'fnv1a32-low-byte' || meta.fortniteVersion !== build)
+        throw new Error('Location index schema or Fortnite build mismatch');
+      const key = assetPath.replaceAll('\\', '/').replace(/^\/+/, '').toLowerCase();
+      let hash = 2166136261;
+      for (const byte of new TextEncoder().encode(key)) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+      const shard = (hash & 255).toString(16).padStart(2, '0');
+      const compressed = await bounded(await fetch('/location-index/' + shard + '.json.gz'), 3 * 1024 * 1024);
+      const expanded = await bounded(new Response(compressed.stream().pipeThrough(new DecompressionStream('gzip'))), 24 * 1024 * 1024);
+      const data = JSON.parse(await expanded.text());
+      if (data.schema !== meta.schema || data.valueProperty !== 'toc' || !Object.hasOwn(data.items || {}, key))
+        throw new Error('Exact asset absent from location shard');
+      const toc = data.items[key];
+      if (typeof toc !== 'string' || !toc.endsWith('.utoc') || toc.includes('..')) throw new Error('Invalid indexed container');
+      return { path: key, toc, shard, build: meta.fortniteVersion, compressedBytes: compressed.size };
+    }, { assetPath: target.path, build: fixtureDocument.build });
+    assert.equal(location.toc.toLowerCase(), target.containerToc.toLowerCase(), 'Index selected a different container from desktop reference');
+    result.genericTextureLocation = location;
+    console.log('LOCATION_INDEX_TEXTURE_RESOLVED', JSON.stringify(location));
+
     const relayBeforeGeneric = {
       requests:
         relayRequests,
@@ -1143,7 +1190,7 @@ try {
           assetPath:
             target.path,
           containerToc:
-            target.containerToc,
+            location.toc,
           expectedWidth:
             target.width,
           expectedHeight:
