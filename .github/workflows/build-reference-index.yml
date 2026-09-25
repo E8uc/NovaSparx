@@ -63,19 +63,19 @@ jobs:
 
           stored="$(
             python - <<'PY'
-import json
-from pathlib import Path
+          import json
+          from pathlib import Path
 
-path = Path("web/location-index/manifest.json")
-if not path.exists():
-    print("missing")
-else:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        print(str(data.get("fortniteVersion") or "missing").strip())
-    except Exception:
-        print("missing")
-PY
+          path = Path("web/location-index/manifest.json")
+          if not path.exists():
+              print("missing")
+          else:
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+                  print(str(data.get("fortniteVersion") or "missing").strip())
+              except Exception:
+                  print("missing")
+          PY
           )"
 
           build_required="false"
@@ -108,38 +108,44 @@ PY
           test -s web/asset-list/fortnite_assets.gz
 
           python - <<'PY'
-import gzip
-import json
-from pathlib import Path
+          import gzip
+          import json
+          from pathlib import Path
 
-manifest = json.loads(
-    Path("web/asset-list/manifest.json").read_text(encoding="utf-8")
-)
+          manifest = json.loads(
+              Path("web/asset-list/manifest.json").read_text(encoding="utf-8")
+          )
 
-if manifest.get("schema") != "novasparx.asset-list.v1":
-    raise SystemExit("Unexpected asset-list schema.")
+          if manifest.get("schema") != "novasparx.asset-list.v1":
+              raise SystemExit("Unexpected asset-list schema.")
 
-expected = int(manifest.get("entries") or 0)
-if expected < 1_000_000:
-    raise SystemExit(f"Asset list is unexpectedly small: {expected}")
+          expected = int(manifest.get("entries") or 0)
+          if expected < 1_000_000:
+              raise SystemExit(f"Asset list is unexpectedly small: {expected}")
 
-count = 0
-with gzip.open("web/asset-list/fortnite_assets.gz", "rt", encoding="utf-8") as handle:
-    for line in handle:
-        value = line.strip()
-        if not value:
-            continue
-        if not value.lower().endswith((".uasset", ".umap")):
-            raise SystemExit(f"Unexpected canonical asset path: {value[:200]}")
-        count += 1
+          count = 0
+          with gzip.open(
+              "web/asset-list/fortnite_assets.gz",
+              "rt",
+              encoding="utf-8",
+          ) as handle:
+              for line in handle:
+                  value = line.strip()
+                  if not value:
+                      continue
+                  if not value.lower().endswith((".uasset", ".umap")):
+                      raise SystemExit(
+                          f"Unexpected canonical asset path: {value[:200]}"
+                      )
+                  count += 1
 
-if count != expected:
-    raise SystemExit(
-        f"Asset-list count mismatch: manifest={expected}, gzip={count}"
-    )
+          if count != expected:
+              raise SystemExit(
+                  f"Asset-list count mismatch: manifest={expected}, gzip={count}"
+              )
 
-print(f"Validated {count:,} canonical Fortnite asset paths.")
-PY
+          print(f"Validated {count:,} canonical Fortnite asset paths.")
+          PY
 
       - name: Commit generated indices
         if: github.event_name != 'pull_request' && steps.probe.outputs.build_required == 'true'
