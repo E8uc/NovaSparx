@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CUE4Parse.UE4.AssetRegistry;
@@ -9,9 +10,25 @@ using CUE4Parse.UE4.Versions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NovaSparx.Backend;
 
+var versionOnly =
+    args.Any(
+        argument =>
+            argument.Equals(
+                "--version-only",
+                StringComparison.OrdinalIgnoreCase));
+
+var outputArgument =
+    args.FirstOrDefault(
+        argument =>
+            !argument.StartsWith(
+                "--",
+                StringComparison.Ordinal));
+
 var outputDirectory =
-    args.Length > 0
-        ? Path.GetFullPath(args[0])
+    !string.IsNullOrWhiteSpace(
+        outputArgument)
+        ? Path.GetFullPath(
+            outputArgument)
         : Path.GetFullPath(
             Path.Combine(
                 AppContext.BaseDirectory,
@@ -49,6 +66,14 @@ var (
     version) =
     await sources.GetLiveManifestAsync(
         timeout.Token);
+
+if (versionOnly)
+{
+    Console.WriteLine(
+        $"LIVE_FORTNITE_VERSION={version}");
+
+    return;
+}
 
 var versions =
     new VersionContainer(
@@ -174,13 +199,25 @@ catch (Exception ex)
         $"Post-mount warning: {ex.Message}");
 }
 
+var generatedRoot =
+    Directory.GetParent(
+        outputDirectory)
+        ?.FullName
+    ?? outputDirectory;
+
 var locationOutputDirectory =
     Path.Combine(
-        Directory.GetParent(
-            outputDirectory)
-            ?.FullName
-        ?? outputDirectory,
+        generatedRoot,
         "location-index");
+
+var assetListOutputDirectory =
+    Path.Combine(
+        generatedRoot,
+        "asset-list");
+
+var canonicalAssetPaths =
+    new SortedSet<string>(
+        StringComparer.OrdinalIgnoreCase);
 
 var packageLocations =
     new SortedDictionary<
@@ -212,10 +249,13 @@ foreach (
         continue;
     }
 
-    var path =
+    var canonicalPath =
         entry.Path
             .Replace('\\', '/')
-            .TrimStart('/')
+            .TrimStart('/');
+
+    var path =
+        canonicalPath
             .ToLowerInvariant();
 
     var tocPath =
@@ -232,6 +272,9 @@ foreach (
 
     packageLocations[path] =
         tocPath;
+
+    canonicalAssetPaths.Add(
+        canonicalPath);
 
     locationContainers.Add(
         tocPath);
@@ -452,6 +495,170 @@ WriteLocationIndexAsync(
         totalBytes);
 }
 
+static async Task<(
+    int Entries,
+    long Bytes,
+    string Sha256)>
+WriteAssetListAsync(
+    string root,
+    IEnumerable<string> source,
+    string version,
+    CancellationToken cancellationToken)
+{
+    var temporary =
+        root +
+        ".tmp";
+
+    if (
+        Directory.Exists(
+            temporary))
+    {
+        Directory.Delete(
+            temporary,
+            recursive: true);
+    }
+
+    Directory.CreateDirectory(
+        temporary);
+
+    var outputPath =
+        Path.Combine(
+            temporary,
+            "fortnite_assets.gz");
+
+    var entries =
+        0;
+
+    await using (
+        var file =
+            new FileStream(
+                outputPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None))
+    await using (
+        var gzip =
+            new GZipStream(
+                file,
+                CompressionLevel.SmallestSize))
+    await using (
+        var writer =
+            new StreamWriter(
+                gzip,
+                new UTF8Encoding(
+                    encoderShouldEmitUTF8Identifier:
+                        false),
+                bufferSize:
+                    64 * 1024,
+                leaveOpen:
+                    false))
+    {
+        foreach (
+            var path in source)
+        {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
+            if (
+                string.IsNullOrWhiteSpace(
+                    path))
+            {
+                continue;
+            }
+
+            await writer.WriteLineAsync(
+                path.AsMemory(),
+                cancellationToken);
+
+            entries++;
+        }
+
+        await writer.FlushAsync(
+            cancellationToken);
+    }
+
+    if (entries < 1)
+    {
+        throw new InvalidDataException(
+            "NovaSparx generated an empty canonical Fortnite asset list.");
+    }
+
+    var info =
+        new FileInfo(
+            outputPath);
+
+    string sha256;
+
+    using (
+        var hashInput =
+            File.OpenRead(
+                outputPath))
+    {
+        sha256 =
+            Convert.ToHexString(
+                    SHA256.HashData(
+                        hashInput))
+                .ToLowerInvariant();
+    }
+
+    var manifest =
+        new
+        {
+            schema =
+                "novasparx.asset-list.v1",
+
+            builtAt =
+                DateTimeOffset.UtcNow,
+
+            fortniteVersion =
+                version,
+
+            entries,
+
+            bytes =
+                info.Length,
+
+            sha256,
+
+            path =
+                "fortnite_assets.gz"
+        };
+
+    await File.WriteAllTextAsync(
+        Path.Combine(
+            temporary,
+            "manifest.json"),
+        JsonSerializer.Serialize(
+            manifest,
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy =
+                    JsonNamingPolicy.CamelCase,
+                WriteIndented =
+                    true
+            }) +
+        "\n",
+        cancellationToken);
+
+    if (
+        Directory.Exists(
+            root))
+    {
+        Directory.Delete(
+            root,
+            recursive: true);
+    }
+
+    Directory.Move(
+        temporary,
+        root);
+
+    return (
+        entries,
+        info.Length,
+        sha256);
+}
+
 if (
     packageLocations.Count <
         1)
@@ -470,6 +677,24 @@ var locationStats =
 
 Console.WriteLine(
     $"ASSET_LOCATION_INDEX|packages={locationStats.Entries}|containers={locationContainers.Count}|shards={locationStats.Shards}|bytes={locationStats.Bytes}");
+
+var assetListStats =
+    await WriteAssetListAsync(
+        assetListOutputDirectory,
+        canonicalAssetPaths,
+        version,
+        timeout.Token);
+
+Console.WriteLine(
+    $"CANONICAL_ASSET_LIST|assets={assetListStats.Entries}|bytes={assetListStats.Bytes}|sha256={assetListStats.Sha256}");
+
+if (
+    assetListStats.Entries !=
+        locationStats.Entries)
+{
+    throw new InvalidDataException(
+        $"Canonical asset list count {assetListStats.Entries} does not match location index count {locationStats.Entries}.");
+}
 
 var registryEntry =
     provider.Files

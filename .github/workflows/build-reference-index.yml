@@ -3,7 +3,7 @@ name: Build NovaSparx reference index
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 5 * * *"
+    - cron: "17,47 * * * *"
   push:
     branches: [main]
     paths:
@@ -41,41 +41,157 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - name: Build reference and asset-location indices
+      - name: Probe live Fortnite build
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          live="$(
+            dotnet run \
+              --project tools/NovaSparx.ReferenceIndex/NovaSparx.ReferenceIndex.csproj \
+              --configuration Release \
+              -- --version-only |
+            sed -n 's/^LIVE_FORTNITE_VERSION=//p' |
+            tail -n 1
+          )"
+
+          if [ -z "$live" ]; then
+            echo "Live Fortnite version probe returned no version." >&2
+            exit 1
+          fi
+
+          stored="$(
+            python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("web/location-index/manifest.json")
+          if not path.exists():
+              print("missing")
+          else:
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+                  print(str(data.get("fortniteVersion") or "missing").strip())
+              except Exception:
+                  print("missing")
+          PY
+          )"
+
+          build_required="false"
+
+          if [ "${{ github.event_name }}" != "schedule" ] || [ "$live" != "$stored" ]; then
+            build_required="true"
+          fi
+
+          echo "live_version=$live" >> "$GITHUB_OUTPUT"
+          echo "stored_version=$stored" >> "$GITHUB_OUTPUT"
+          echo "build_required=$build_required" >> "$GITHUB_OUTPUT"
+
+          echo "Live Fortnite build: $live"
+          echo "Stored Fortnite build: $stored"
+          echo "Heavy rebuild required: $build_required"
+
+      - name: Build reference, location, and canonical asset indices
+        if: steps.probe.outputs.build_required == 'true'
         env:
           NOVASPARX_CACHE_DIR: /tmp/novasparx-reference-index
         run: |
-          dotnet run             --project tools/NovaSparx.ReferenceIndex/NovaSparx.ReferenceIndex.csproj             --configuration Release             -- web/reference-index
+          dotnet run \
+            --project tools/NovaSparx.ReferenceIndex/NovaSparx.ReferenceIndex.csproj \
+            --configuration Release \
+            --no-build \
+            -- web/reference-index
+
           test -s web/location-index/manifest.json
+          test -s web/asset-list/manifest.json
+          test -s web/asset-list/fortnite_assets.gz
+
+          python - <<'PY'
+          import gzip
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(
+              Path("web/asset-list/manifest.json").read_text(encoding="utf-8")
+          )
+
+          if manifest.get("schema") != "novasparx.asset-list.v1":
+              raise SystemExit("Unexpected asset-list schema.")
+
+          expected = int(manifest.get("entries") or 0)
+          if expected < 1_000_000:
+              raise SystemExit(f"Asset list is unexpectedly small: {expected}")
+
+          count = 0
+          with gzip.open(
+              "web/asset-list/fortnite_assets.gz",
+              "rt",
+              encoding="utf-8",
+          ) as handle:
+              for line in handle:
+                  value = line.strip()
+                  if not value:
+                      continue
+                  if not value.lower().endswith((".uasset", ".umap")):
+                      raise SystemExit(
+                          f"Unexpected canonical asset path: {value[:200]}"
+                      )
+                  count += 1
+
+          if count != expected:
+              raise SystemExit(
+                  f"Asset-list count mismatch: manifest={expected}, gzip={count}"
+              )
+
+          print(f"Validated {count:,} canonical Fortnite asset paths.")
+          PY
 
       - name: Commit generated indices
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.probe.outputs.build_required == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
           generated="$(mktemp -d)"
-          mkdir -p "$generated/reference-index" "$generated/location-index"
+          mkdir -p \
+            "$generated/reference-index" \
+            "$generated/location-index" \
+            "$generated/asset-list"
+
           cp -a web/reference-index/. "$generated/reference-index/"
           cp -a web/location-index/. "$generated/location-index/"
+          cp -a web/asset-list/. "$generated/asset-list/"
 
           git fetch origin main
           git reset --hard origin/main
 
-          rm -rf web/reference-index web/location-index
-          mkdir -p web/reference-index web/location-index
+          rm -rf \
+            web/reference-index \
+            web/location-index \
+            web/asset-list
+
+          mkdir -p \
+            web/reference-index \
+            web/location-index \
+            web/asset-list
+
           cp -a "$generated/reference-index"/. web/reference-index/
           cp -a "$generated/location-index"/. web/location-index/
+          cp -a "$generated/asset-list"/. web/asset-list/
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add web/reference-index web/location-index
+          git add \
+            web/reference-index \
+            web/location-index \
+            web/asset-list
 
           if git diff --cached --quiet; then
             echo "Generated indices are already current."
             exit 0
           fi
 
-          git commit -m "Build NovaSparx generated indices"
+          git commit -m "Update Fortnite generated indices for ${{ steps.probe.outputs.live_version }}"
           git push origin HEAD:main
